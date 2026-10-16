@@ -133,6 +133,16 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": len(env) > 0})
 	case "/api/compact":
 		srv.compact(w, body)
+	case "/api/skills":
+		if err := createSkill(str(body, "name"), str(body, "description"), str(body, "content"), str(body, "scope")); err != nil {
+			code := 400
+			if strings.Contains(err.Error(), "already exists") {
+				code = 409
+			}
+			writeJSON(w, code, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
 	default:
 		writeJSON(w, 404, map[string]any{"error": "not found"})
 	}
@@ -293,27 +303,48 @@ func cleanLine(s string, max int) string {
 	return clip(strings.TrimSpace(b.String()), max)
 }
 
-// compact types /compact into the session's terminal, only while Claude is idle.
-func (srv *Server) compact(w http.ResponseWriter, body map[string]any) {
-	sid := str(body, "session_id")
-	x, ok := srv.store.SessionCopy(sid)
-	if !ok {
-		writeJSON(w, 404, map[string]any{"error": "That session isn't connected anymore."})
-		return
+// doCompact sends /compact into a session's terminal if it's the user's
+// turn. Shared by the HTTP endpoint (dashboard) and native UI actions (the
+// compact-nudge toast's button), so both go through the same busy/can-type
+// checks instead of duplicating them.
+func (srv *Server) doCompact(sid, focus string) (ok bool, errMsg string) {
+	x, found := srv.store.SessionCopy(sid)
+	if !found {
+		return false, "That session isn't connected anymore."
 	}
 	if x.Status == "working" || x.Status == "needs_permission" || srv.store.hasPendingLocked(sid) {
-		writeJSON(w, 409, map[string]any{"error": "Claude is busy in that session. Compact when it's your turn."})
-		return
+		return false, "Claude is busy in that session. Compact when it's your turn."
+	}
+	if ambiguousJetBrains(srv.store.LiveEnvs(sid), x.Env) {
+		return false, "Another Claude session is also open in a JetBrains IDE right now - Switchboard can't tell " +
+			"terminal tabs (or even separate windows) apart there, so compacting here risks typing into the wrong " +
+			"session. Finish or close the other one first, or run /compact yourself in this session's terminal."
 	}
 	text := "/compact"
-	if f := cleanLine(str(body, "focus"), 400); f != "" {
+	if f := cleanLine(focus, 400); f != "" {
 		text += " " + f
 	}
 	if err := sendText(x.Env, text); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
-		return
+		return false, err.Error()
 	}
 	srv.store.LogFor(sid, "compact", "Sent "+clip(text, 120))
+	return true, ""
+}
+
+// compact types /compact into the session's terminal, only while Claude is idle.
+func (srv *Server) compact(w http.ResponseWriter, body map[string]any) {
+	ok, msg := srv.doCompact(str(body, "session_id"), str(body, "focus"))
+	if !ok {
+		code := 400
+		switch msg {
+		case "That session isn't connected anymore.":
+			code = 404
+		case "Claude is busy in that session. Compact when it's your turn.":
+			code = 409
+		}
+		writeJSON(w, code, map[string]any{"error": msg})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 

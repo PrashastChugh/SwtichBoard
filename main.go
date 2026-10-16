@@ -32,8 +32,10 @@ Options for install:  --minimal (fewer hooks, less live detail)   --shell-form (
 `
 
 func main() {
+	// No args: either double-clicked from Launchpad/Finder, or run bare from
+	// a terminal - both cases just mean "start it". Use --help for usage.
 	if len(os.Args) < 2 {
-		fmt.Printf(usage, version)
+		cmdStart(nil)
 		return
 	}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -97,6 +99,8 @@ func main() {
 		cmdDemo()
 	case "version", "--version", "-v":
 		fmt.Println("switchboard", version)
+	case "help", "--help", "-h":
+		fmt.Printf(usage, version)
 	default:
 		fmt.Printf(usage, version)
 	}

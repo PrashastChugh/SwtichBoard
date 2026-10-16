@@ -6,8 +6,45 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 )
+
+// knownContextWindows: real context sizes for current model families, so the
+// dashboard's "% full" figure doesn't rely on one fixed guess (config.json's
+// context_window) that's wrong for whichever model a session actually used.
+// ponytail: a static snapshot, not a live lookup - needs a one-line update
+// when a model's window changes or a new family ships. Upgrade path if that
+// becomes a hassle: read it from Anthropic's Models API instead, but that
+// needs its own API key/network call, a real new dependency this tool
+// otherwise doesn't have.
+var knownContextWindows = map[string]int{
+	"claude-fable-5":    1_000_000,
+	"claude-mythos-5":   1_000_000,
+	"claude-opus-5":     1_000_000,
+	"claude-opus-4-8":   1_000_000,
+	"claude-opus-4-7":   1_000_000,
+	"claude-opus-4-6":   1_000_000,
+	"claude-sonnet-5":   1_000_000,
+	"claude-sonnet-4-6": 1_000_000,
+	"claude-sonnet-4-5": 200_000,
+	"claude-opus-4-5":   200_000,
+	"claude-opus-4-1":   200_000,
+	"claude-opus-4-0":   200_000,
+	"claude-sonnet-4-0": 200_000,
+	"claude-haiku-4-5":  200_000,
+}
+
+// contextWindowFor returns the known window for a model name, or 0 if
+// unrecognized - the caller falls back to the configured default.
+func contextWindowFor(model string) int {
+	for prefix, size := range knownContextWindows {
+		if strings.HasPrefix(model, prefix) {
+			return size
+		}
+	}
+	return 0
+}
 
 // TranscriptMeter reads Claude Code's JSONL transcript incrementally (only new
 // bytes each time) and sums the usage blocks. Costs zero model tokens.

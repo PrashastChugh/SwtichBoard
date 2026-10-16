@@ -131,7 +131,7 @@ dialog::backdrop { background: rgb(10 15 20 / .45); }
 .form { display: grid; grid-template-columns: 110px 130px 1fr; gap: 10px; }
 .form label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 .form .wide { grid-column: 1 / -1; }
-.form input, .form select { border: 1px solid var(--rule); background: var(--panel); border-radius: 8px; padding: 6px 10px; color: var(--ink); }
+.form input, .form select, .form textarea { border: 1px solid var(--rule); background: var(--panel); border-radius: 8px; padding: 6px 10px; color: var(--ink); font: inherit; }
 .hint { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
@@ -155,6 +155,7 @@ dialog::backdrop { background: rgb(10 15 20 / .45); }
       <button class="btn" id="soundBtn" aria-pressed="true">Sound</button>
       <button class="btn" id="alertBtn" aria-pressed="false">Browser alerts</button>
       <button class="btn" id="rulesBtn">Rules</button>
+      <button class="btn" id="skillsBtn">Skills</button>
     </div>
   </header>
 
@@ -171,7 +172,7 @@ dialog::backdrop { background: rgb(10 15 20 / .45); }
   </section>
 
   <section aria-labelledby="gh">
-    <h2 id="gh">Activity</h2>
+    <h2 id="gh">Activity <select id="logFilter" style="font-size:13px;font-weight:400"></select></h2>
     <div class="log" id="log"></div>
   </section>
 </div>
@@ -192,6 +193,24 @@ dialog::backdrop { background: rgb(10 15 20 / .45); }
   <div class="dlg-actions">
     <button class="btn quiet" id="dlgClose">Close</button>
     <button class="btn allow" id="dlgSave">Save rule</button>
+  </div>
+</dialog>
+
+<dialog id="skillsDlg">
+  <h2>New skill</h2>
+  <p class="hint" style="margin-top:0">Writes a SKILL.md Claude Code picks up next time it looks for skills. Global skills are available in every project; a project-scoped skill only shows up when Claude Code is working in that folder.</p>
+  <div class="form">
+    <div class="wide" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <label>Name<input id="skName" placeholder="my-skill-name"></label>
+      <label>Scope<select id="skScope"></select></label>
+    </div>
+    <label class="wide">Description (shown to Claude when deciding whether this skill applies)<input id="skDesc" placeholder="Use when the user asks to ..."></label>
+    <label class="wide">Content<textarea id="skContent" rows="8" placeholder="Instructions Claude follows when this skill is used"></textarea></label>
+  </div>
+  <p class="hint" id="skErr" style="color:var(--red)"></p>
+  <div class="dlg-actions">
+    <button class="btn quiet" id="skClose">Close</button>
+    <button class="btn allow" id="skSave">Save skill</button>
   </div>
 </dialog>
 
@@ -333,7 +352,7 @@ function renderLines() {
   el.innerHTML = `<div class="row head"><span></span><span>Project</span><span>Status</span><span>Doing now</span><span>Context</span><span>Updated</span><span></span></div>` +
     rows.map((s) => {
       const t = s.tokens;
-      const win = S.context_window || 200000;
+      const win = (t && t.context_window) || S.context_window || 200000;
       const pct = t ? Math.round((t.context / win) * 100) : 0;
       const tok = t ? `<span class="${pct >= 70 ? "full" : ""}" title="Context now: ${t.context.toLocaleString()} tokens (about ${pct}% of ${k(win)})&#10;Output: ${t.output.toLocaleString()}&#10;Cache reads: ${t.cache_read.toLocaleString()}&#10;Cache writes: ${t.cache_write.toLocaleString()}&#10;Fresh input: ${t.input.toLocaleString()}&#10;Cache hit rate: ${t.cache_hit == null ? "–" : Math.round(t.cache_hit * 100) + "%"}${t.model ? "&#10;Model: " + esc(t.model) : ""}">${k(t.context)} ctx (${pct}%)</span>` : "–";
       const busy = !(s.status === "idle" || s.status === "needs_input");
@@ -353,24 +372,49 @@ function renderLines() {
   lastStatus = Object.fromEntries(S.sessions.map((s) => [s.id, s.status]));
 }
 
+let logFilter = "";
 function renderLog() {
-  const el = $("log");
-  if (!S.log.length) { el.innerHTML = `<div style="display:block;color:var(--muted)">Events from your sessions show up here.</div>`; return; }
-  el.innerHTML = [...S.log].reverse().map((e) => `<div><time>${new Date(e.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}</time><span class="lp">${esc(e.project)}</span><span>${esc(e.text)}</span></div>`).join("");
+  const el = $("log"), sel = $("logFilter");
+  const seen = new Set(), opts = [`<option value="">All sessions</option>`];
+  for (const s of S.sessions) {
+    if (seen.has(s.id)) continue;
+    seen.add(s.id);
+    const dupe = S.sessions.filter((x) => x.project === s.project).length > 1;
+    opts.push(`<option value="${esc(s.id)}">${esc(dupe ? `${s.project} (${s.id.slice(0, 6)})` : s.project)}</option>`);
+  }
+  sel.innerHTML = opts.join("");
+  sel.value = [...sel.options].some((o) => o.value === logFilter) ? logFilter : (logFilter = "");
+
+  const logs = logFilter ? S.log.filter((e) => e.session === logFilter) : S.log;
+  if (!logs.length) {
+    el.innerHTML = `<div style="display:block;color:var(--muted)">${logFilter ? "No activity yet for this session." : "Events from your sessions show up here."}</div>`;
+    return;
+  }
+  el.innerHTML = [...logs].reverse().map((e) => `<div><time>${new Date(e.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}</time><span class="lp">${esc(e.project)}</span><span>${esc(e.text)}</span></div>`).join("");
 }
+$("logFilter").addEventListener("change", (e) => { logFilter = e.target.value; renderLog(); });
 
 function renderRules() {
   const el = $("rlist");
-  el.innerHTML = S.rules.length ? S.rules.map((r) => `
+  el.innerHTML = S.rules.length ? S.rules.map((r) => {
+    const firstLine = r.pattern.split("\n")[0];
+    const clipped = r.pattern.includes("\n") || firstLine.length > 70;
+    const shown = clipped ? firstLine.slice(0, 70) + "…" : firstLine;
+    const scope = r.project === "*" ? "Any project" : "Project: " + r.project.split(/[\\/]/).pop();
+    return `
     <div class="rrow"><span class="pill ${r.action}">${r.action === "allow" ? "Allow" : "Deny"}</span>
-    <span class="tag rtool">${esc(r.tool)}</span><code style="word-break:break-all">${esc(r.pattern)}</code>
-    <span class="rproj pdir" title="${esc(r.project)}">${r.project === "*" ? "Any project" : esc(r.project.split(/[\\/]/).pop())}</span>
-    <button class="btn quiet" data-del="${r.id}">Delete</button></div>`).join("")
+    <span class="tag rtool">${esc(r.tool)}</span><code title="${esc(r.pattern)}" style="word-break:break-all">${esc(shown)}</code>
+    <span class="rproj pdir" title="${esc(r.project)}">${esc(scope)}</span>
+    <button class="btn quiet" data-del="${r.id}">Delete</button></div>`;
+  }).join("")
     : `<p class="hint">No rules yet. Use "Always allow…" on a request to create one.</p>`;
   const sel = $("fProject"), cur = sel.value;
-  const dirs = [...new Set(S.sessions.map((s) => s.cwd).concat(S.pending.map((p) => p.cwd)))];
-  sel.innerHTML = `<option value="*">Any project</option>` + dirs.map((d) => `<option value="${esc(d)}">${esc(d.split(/[\\/]/).pop())}</option>`).join("");
+  sel.innerHTML = `<option value="*">Any project</option>` + projectDirs().map((d) => `<option value="${esc(d)}">${esc(d.split(/[\\/]/).pop())}</option>`).join("");
   if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+function projectDirs() {
+  return [...new Set(S.sessions.map((s) => s.cwd).concat(S.pending.map((p) => p.cwd)))];
 }
 
 function render() {
@@ -440,7 +484,7 @@ $("queue").addEventListener("keydown", (e) => {
   }
 });
 document.addEventListener("keydown", (e) => {
-  if (e.metaKey || e.ctrlKey || e.altKey || $("rulesDlg").open || $("compactDlg").open) return;
+  if (e.metaKey || e.ctrlKey || e.altKey || $("rulesDlg").open || $("compactDlg").open || $("skillsDlg").open) return;
   if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
   const p = S.pending[0]; if (!p) return;
   const key = e.key.toLowerCase();
@@ -521,6 +565,23 @@ $("dlgSave").onclick = async () => {
   $("fPattern").value = ""; $("fPending").value = "";
   $("rulesDlg").close();
 };
+$("skillsBtn").onclick = () => {
+  $("skName").value = ""; $("skDesc").value = ""; $("skContent").value = ""; $("skErr").textContent = "";
+  $("skScope").innerHTML = `<option value="global">Global (every project)</option>` +
+    projectDirs().map((d) => `<option value="${esc(d)}">${esc(d.split(/[\\/]/).pop())}</option>`).join("");
+  $("skillsDlg").showModal();
+  $("skName").focus();
+};
+$("skClose").onclick = () => $("skillsDlg").close();
+$("skSave").onclick = async () => {
+  $("skErr").textContent = "";
+  const skill = { name: $("skName").value.trim(), description: $("skDesc").value.trim(), content: $("skContent").value.trim(), scope: $("skScope").value };
+  const r = await fetch("/api/skills", { method: "POST", headers: { "Content-Type": "application/json", "X-Switchboard-Token": TOKEN }, body: JSON.stringify(skill) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { $("skErr").textContent = d.error || "Couldn't save the skill."; return; }
+  $("skillsDlg").close();
+};
+
 $("rlist").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-del]"); if (!b) return;
   await api("/api/rules", { action: "delete", id: b.dataset.del });

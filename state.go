@@ -25,22 +25,23 @@ func newID(n int) string {
 // UI is implemented by the native macOS interface when it's running.
 type UI interface {
 	Update(state []byte)
-	Toast(title, body, sessionID string)
+	Toast(kind, title, body, sessionID string)
 }
 
 type Session struct {
-	ID         string            `json:"id"`
-	Cwd        string            `json:"cwd"`
-	Project    string            `json:"project"`
-	Status     string            `json:"status"` // working, needs_permission, needs_input, idle, error, ended
-	Activity   string            `json:"activity"`
-	LastPrompt string            `json:"last_prompt"`
-	Started    float64           `json:"started"`
-	Updated    float64           `json:"updated"`
-	Tokens     map[string]any    `json:"tokens"`
-	Error      string            `json:"error"`
-	CanType    bool              `json:"can_type"` // Switchboard can type into its terminal (for /compact)
-	Env        map[string]string `json:"-"`
+	ID               string            `json:"id"`
+	Cwd              string            `json:"cwd"`
+	Project          string            `json:"project"`
+	Status           string            `json:"status"` // working, needs_permission, needs_input, idle, error, ended
+	Activity         string            `json:"activity"`
+	LastPrompt       string            `json:"last_prompt"`
+	Started          float64           `json:"started"`
+	Updated          float64           `json:"updated"`
+	Tokens           map[string]any    `json:"tokens"`
+	Error            string            `json:"error"`
+	CanType          bool              `json:"can_type"` // Switchboard can type into its terminal (for /compact)
+	Env              map[string]string `json:"-"`
+	compactSuggested bool              // already nudged "good time to compact" this time above threshold
 }
 
 type Pending struct {
@@ -252,11 +253,32 @@ func (s *Store) session(ev map[string]any) *Session {
 	for k, v := range envOf(ev) {
 		x.Env[k] = v
 	}
-	x.CanType = canSendText(x.Env)
+	x.CanType = canSendText(x.Env) && !ambiguousJetBrains(s.liveEnvsLocked(sid), x.Env)
 	if tp := str(ev, "transcript_path"); tp != "" && s.meters[sid] == nil {
 		s.meters[sid] = newMeter(tp)
 	}
 	return x
+}
+
+// liveEnvsLocked returns every other live (non-ended) session's terminal
+// env - caller must hold s.mu. Used to detect an ambiguous compact target
+// (e.g. two sessions both in JetBrains, which can't be told apart).
+func (s *Store) liveEnvsLocked(excludeSid string) []map[string]string {
+	var out []map[string]string
+	for id, x := range s.sessions {
+		if id == excludeSid || x.Status == "ended" {
+			continue
+		}
+		out = append(out, x.Env)
+	}
+	return out
+}
+
+// LiveEnvs is liveEnvsLocked for callers that don't already hold s.mu.
+func (s *Store) LiveEnvs(excludeSid string) []map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.liveEnvsLocked(excludeSid)
 }
 
 func (s *Store) addLog(x *Session, kind, text string) {
@@ -284,7 +306,7 @@ func (s *Store) alert(x *Session, kind, title, body string) {
 	}
 	s.lastAlert[key] = t
 	if s.ui != nil {
-		go s.ui.Toast(title, body, x.ID)
+		go s.ui.Toast(kind, title, body, x.ID)
 		return
 	}
 	if s.cfg.OSNotifications {
@@ -292,21 +314,50 @@ func (s *Store) alert(x *Session, kind, title, body string) {
 	}
 }
 
+// compactThreshold: context fraction at which Switchboard nudges "good time
+// to compact" - matches the dashboard's own 70% highlight threshold.
+const compactThreshold = 0.70
+
 func (s *Store) RefreshTokens(sid string) {
 	go func() {
 		s.mu.Lock()
 		m := s.meters[sid]
+		win := s.cfg.ContextWindow
 		s.mu.Unlock()
 		if m == nil {
 			return
 		}
 		m.Update() // only this goroutine family touches the meter's file state
 		sum := m.Summary()
+		if model, _ := sum["model"].(string); model != "" {
+			if w := contextWindowFor(model); w > 0 {
+				win = w
+			}
+		}
+		sum["context_window"] = win
+
 		s.mu.Lock()
-		if x := s.sessions[sid]; x != nil {
+		x := s.sessions[sid]
+		var alertPct int
+		if x != nil {
 			x.Tokens = sum
+			if ctx, ok := sum["context"].(int64); ok && win > 0 {
+				pct := float64(ctx) / float64(win)
+				switch {
+				case pct >= compactThreshold && !x.compactSuggested:
+					x.compactSuggested = true
+					alertPct = int(pct * 100)
+					s.addLog(x, "note", fmt.Sprintf("Good time to compact (~%d%% of context used)", alertPct))
+				case pct < compactThreshold:
+					x.compactSuggested = false
+				}
+			}
 		}
 		s.mu.Unlock()
+		if alertPct > 0 {
+			s.alert(x, "compact", x.Project+" - good time to compact",
+				fmt.Sprintf("Context is about %d%% full. Wrap up this task, then compact.", alertPct))
+		}
 		s.Touch()
 	}()
 }

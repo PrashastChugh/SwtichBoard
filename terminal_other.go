@@ -10,6 +10,8 @@ func showTerminal(env map[string]string) { go tmuxSelect(env) }
 
 func canSendText(env map[string]string) bool { return hasTmux(env) || hasWezterm(env) }
 
+func ambiguousJetBrains(others []map[string]string, env map[string]string) bool { return false }
+
 func sendText(env map[string]string, text string) error {
 	switch {
 	case hasTmux(env):

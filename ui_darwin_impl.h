@@ -584,14 +584,16 @@ static double SBNow(void) { return [[NSDate date] timeIntervalSince1970]; }
     return c;
 }
 
-- (void)toastTitle:(NSString *)title body:(NSString *)body session:(NSString *)sid {
+- (void)toastTitle:(NSString *)title body:(NSString *)body session:(NSString *)sid kind:(NSString *)kind {
     if (!gPopups) return;
+    BOOL isCompact = [kind isEqualToString:@"compact"];
+    static const CGFloat kAccent = 5; // left accent bar width, compact nudges only
     NSInteger lines = body.length > 52 ? 2 : 1;
     CGFloat h = kMargin + 20 + 4 + 16 * lines + 10 + 28 + kMargin;
     SBCard *c = [SBCard new];
     c.panel = SBMakePanel(kCardW, h);
     c.height = h;
-    c.expires = SBNow() + 7;
+    c.expires = SBNow() + (isCompact ? 12 : 7); // a bit longer: it asks for a decision, not just FYI
     NSView *v = c.panel.contentView;
     __weak SBController *ws = self;
     __weak SBCard *wc = c;
@@ -603,12 +605,30 @@ static double SBNow(void) { return [[NSDate date] timeIntervalSince1970]; }
         [s.toasts removeObject:card];
         [s layout];
     };
+    CGFloat left = 14;
+    if (isCompact) {
+        // Colored left bar so a compact nudge reads differently from a plain
+        // FYI toast at a glance, before you even read the text.
+        NSView *bar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kAccent, h)];
+        bar.wantsLayer = YES;
+        bar.layer.backgroundColor = [SBRGB(0.30, 0.65, 0.55, 1) CGColor];
+        [v addSubview:bar];
+        left = 14 + kAccent;
+    }
     CGFloat y = h - kMargin - 20;
-    SBLabel(v, title, NSMakeRect(14, y, kCardW - 28, 20), 13, YES, NO, nil, 1);
+    SBLabel(v, title, NSMakeRect(left, y, kCardW - left - 14, 20), 13, YES, NO, nil, 1);
     y -= 4 + 16 * lines;
-    SBLabel(v, body, NSMakeRect(14, y, kCardW - 28, 16 * lines), 12, NO, NO, SBRGB(1, 1, 1, 0.62), lines);
+    SBLabel(v, body, NSMakeRect(left, y, kCardW - left - 14, 16 * lines), 12, NO, NO, SBRGB(1, 1, 1, 0.62), lines);
     y -= 10 + 28;
-    if (sid.length) {
+    if (isCompact) {
+        // Tinted green like Allow, and the only "do something" button on this
+        // card - Dismiss sits far to the right so the two aren't easy to
+        // mix up with a careless click.
+        SBButton(v, @"Compact now", NSMakeRect(left, y, 150, 28), c.targets, ^(NSButton *b) {
+            SBEmit(@"compact_now", sid, @"");
+            dismiss();
+        }, SBRGB(0.20, 0.62, 0.36, 1));
+    } else if (sid.length) {
         SBButton(v, @"Open terminal", NSMakeRect(12, y, 130, 28), c.targets, ^(NSButton *b) {
             SBEmit(@"show", sid, @"");
             dismiss();
@@ -703,11 +723,11 @@ static void SBUpdate(const char *json) {
     });
 }
 
-static void SBToast(const char *title, const char *body, const char *sid) {
-    NSString *t = [NSString stringWithUTF8String:title], *b = [NSString stringWithUTF8String:body],
-             *i = [NSString stringWithUTF8String:sid];
+static void SBToast(const char *kind, const char *title, const char *body, const char *sid) {
+    NSString *k = [NSString stringWithUTF8String:kind], *t = [NSString stringWithUTF8String:title],
+             *b = [NSString stringWithUTF8String:body], *i = [NSString stringWithUTF8String:sid];
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (gController) [gController toastTitle:t body:b session:i];
+        if (gController) [gController toastTitle:t body:b session:i kind:k];
     });
 }
 

@@ -31,12 +31,13 @@ func (macUI) Update(state []byte) {
 	C.SBUpdate(cs) // copies the string, then draws on the main thread
 }
 
-func (macUI) Toast(title, body, sessionID string) {
-	ct, cb, cs := C.CString(title), C.CString(body), C.CString(sessionID)
+func (macUI) Toast(kind, title, body, sessionID string) {
+	ck, ct, cb, cs := C.CString(kind), C.CString(title), C.CString(body), C.CString(sessionID)
+	defer C.free(unsafe.Pointer(ck))
 	defer C.free(unsafe.Pointer(ct))
 	defer C.free(unsafe.Pointer(cb))
 	defer C.free(unsafe.Pointer(cs))
-	C.SBToast(ct, cb, cs)
+	C.SBToast(ck, ct, cb, cs)
 }
 
 func cbool(b bool) C.int {

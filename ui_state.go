@@ -217,6 +217,16 @@ func (srv *Server) handleUIAction(kind, id, payload string) {
 		}
 	case "show":
 		showTerminal(st.SessionEnv(id))
+	case "compact_now": // the compact-nudge toast's own button
+		if ok, msg := srv.doCompact(id, ""); !ok {
+			st.LogFor(id, "compact", "Couldn't compact: "+msg)
+			// The toast fires on click with no response UI of its own - without
+			// this, a failed attempt (e.g. Claude started working again before
+			// you clicked) looks like the button silently did nothing.
+			if x, found := st.SessionCopy(id); found {
+				st.alert(&x, "compact-failed", x.Project+" - couldn't compact", msg)
+			}
+		}
 	case "dashboard":
 		showDashboard(srv.URL())
 	case "widget_moved":
