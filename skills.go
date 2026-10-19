@@ -56,3 +56,101 @@ func yamlQuote(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	return `"` + s + `"`
 }
+
+// deleteSkill removes a skill's whole folder (not just SKILL.md).
+func deleteSkill(name, scope string) error {
+	path, err := skillPath(name, scope)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); err != nil {
+		return errors.New("that skill doesn't exist")
+	}
+	return os.RemoveAll(filepath.Dir(path))
+}
+
+type SkillInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Scope       string `json:"scope"` // "global" or a project path
+}
+
+// listSkills scans the global skills folder plus every known project's
+// .claude/skills folder - the same "known projects" universe the Rules and
+// Skills dialogs already use, so this never needs to scan the filesystem
+// for folders Switchboard has no other reason to know about.
+func listSkills(projects []string) []SkillInfo {
+	out := []SkillInfo{}
+	h, _ := os.UserHomeDir()
+	out = append(out, scanSkillDir(filepath.Join(h, ".claude", "skills"), "global")...)
+	for _, p := range projects {
+		if p == "" {
+			continue
+		}
+		out = append(out, scanSkillDir(filepath.Join(p, ".claude", "skills"), p)...)
+	}
+	return out
+}
+
+func scanSkillDir(dir, scope string) []SkillInfo {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []SkillInfo
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name, desc, ok := parseSkillFrontmatter(filepath.Join(dir, e.Name(), "SKILL.md"))
+		if !ok {
+			continue
+		}
+		out = append(out, SkillInfo{Name: name, Description: desc, Scope: scope})
+	}
+	return out
+}
+
+// parseSkillFrontmatter pulls name/description out of a SKILL.md's YAML
+// frontmatter. Deliberately a simple line scan, not a real YAML parser -
+// createSkill is the only thing writing this format for Switchboard-created
+// skills, so this is good enough to display; it won't handle hand-edited
+// multi-line YAML correctly.
+func parseSkillFrontmatter(path string) (name, description string, ok bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", false
+	}
+	inFrontmatter := false
+	for _, line := range strings.Split(string(b), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
+			if inFrontmatter {
+				break
+			}
+			inFrontmatter = true
+			continue
+		}
+		if !inFrontmatter {
+			continue
+		}
+		if v, found := strings.CutPrefix(trimmed, "name:"); found {
+			name = unquoteYAML(strings.TrimSpace(v))
+		}
+		if v, found := strings.CutPrefix(trimmed, "description:"); found {
+			description = unquoteYAML(strings.TrimSpace(v))
+		}
+	}
+	if name == "" {
+		return "", "", false
+	}
+	return name, description, true
+}
+
+func unquoteYAML(s string) string {
+	s = strings.TrimPrefix(s, `"`)
+	s = strings.TrimSuffix(s, `"`)
+	s = strings.ReplaceAll(s, `\"`, `"`)
+	s = strings.ReplaceAll(s, `\\`, `\`)
+	return s
+}

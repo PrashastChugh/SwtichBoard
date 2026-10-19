@@ -126,6 +126,7 @@ dialog { border: 1px solid var(--rule); border-radius: 12px; background: var(--r
 dialog::backdrop { background: rgb(10 15 20 / .45); }
 .rlist { margin: 8px 0 18px; display: grid; gap: 6px; }
 .rrow { display: grid; grid-template-columns: 64px 90px 1fr 150px auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--rule); font-size: 14px; }
+.skrow { display: grid; grid-template-columns: 160px 1fr 150px auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--rule); font-size: 14px; }
 .pill { font-size: 12px; font-weight: 600; border-radius: 99px; padding: 1px 8px; text-align: center; color: #fff; }
 .pill.allow { background: var(--green); } .pill.deny { background: var(--red); }
 .form { display: grid; grid-template-columns: 110px 130px 1fr; gap: 10px; }
@@ -197,8 +198,10 @@ dialog::backdrop { background: rgb(10 15 20 / .45); }
 </dialog>
 
 <dialog id="skillsDlg">
+  <h2>Skills</h2>
+  <p class="hint" style="margin-top:0">Writes a SKILL.md Claude Code picks up next time it looks for skills. Global skills are available in every project; a project-scoped skill only shows up when Claude Code is working in that folder. Only shows skills in projects Switchboard currently knows about (active or recently-pending sessions).</p>
+  <div class="rlist" id="sklist"></div>
   <h2>New skill</h2>
-  <p class="hint" style="margin-top:0">Writes a SKILL.md Claude Code picks up next time it looks for skills. Global skills are available in every project; a project-scoped skill only shows up when Claude Code is working in that folder.</p>
   <div class="form">
     <div class="wide" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <label>Name<input id="skName" placeholder="my-skill-name"></label>
@@ -565,17 +568,37 @@ $("dlgSave").onclick = async () => {
   $("fPattern").value = ""; $("fPending").value = "";
   $("rulesDlg").close();
 };
+async function renderSkills() {
+  const el = $("sklist");
+  el.innerHTML = `<p class="hint">Loading…</p>`;
+  let skills = [];
+  try {
+    skills = await (await fetch("/api/skills", { headers: { "X-Switchboard-Token": TOKEN } })).json();
+  } catch {}
+  if (!skills || !skills.length) { el.innerHTML = `<p class="hint">No skills yet.</p>`; return; }
+  el.innerHTML = skills.map((s) => `
+    <div class="skrow"><strong>${esc(s.name)}</strong>
+    <span class="pdir" title="${esc(s.description)}">${esc(s.description)}</span>
+    <span class="pdir" title="${esc(s.scope)}">${s.scope === "global" ? "Global" : esc(s.scope.split(/[\\/]/).pop())}</span>
+    <button class="btn quiet" data-skdel="${esc(s.name)}" data-skscope="${esc(s.scope)}">Delete</button></div>`).join("");
+}
+$("sklist").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-skdel]"); if (!b) return;
+  await api("/api/skills", { action: "delete", name: b.dataset.skdel, scope: b.dataset.skscope });
+  renderSkills();
+});
 $("skillsBtn").onclick = () => {
   $("skName").value = ""; $("skDesc").value = ""; $("skContent").value = ""; $("skErr").textContent = "";
   $("skScope").innerHTML = `<option value="global">Global (every project)</option>` +
     projectDirs().map((d) => `<option value="${esc(d)}">${esc(d.split(/[\\/]/).pop())}</option>`).join("");
+  renderSkills();
   $("skillsDlg").showModal();
   $("skName").focus();
 };
 $("skClose").onclick = () => $("skillsDlg").close();
 $("skSave").onclick = async () => {
   $("skErr").textContent = "";
-  const skill = { name: $("skName").value.trim(), description: $("skDesc").value.trim(), content: $("skContent").value.trim(), scope: $("skScope").value };
+  const skill = { action: "create", name: $("skName").value.trim(), description: $("skDesc").value.trim(), content: $("skContent").value.trim(), scope: $("skScope").value };
   const r = await fetch("/api/skills", { method: "POST", headers: { "Content-Type": "application/json", "X-Switchboard-Token": TOKEN }, body: JSON.stringify(skill) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { $("skErr").textContent = d.error || "Couldn't save the skill."; return; }

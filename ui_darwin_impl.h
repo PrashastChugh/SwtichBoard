@@ -416,7 +416,12 @@ static double SBNow(void) { return [[NSDate date] timeIntervalSince1970]; }
     NSArray *sorted = [self.cards.allValues sortedArrayUsingComparator:^NSComparisonResult(SBCard *a, SBCard *b) {
         return a.created < b.created ? NSOrderedAscending : (a.created > b.created ? NSOrderedDescending : NSOrderedSame);
     }];
-    NSArray *all = [sorted arrayByAddingObjectsFromArray:self.toasts];
+    // Toasts first, cards after: toasts are short-lived (7-12s) and usually
+    // the direct result of something you just clicked, so they shouldn't
+    // get silently starved out of the 6-slot cap by longer-lived permission
+    // cards in a busy session (confirmed 2026-10-16: a compact-failure
+    // toast fired correctly but never became visible this way).
+    NSArray *all = [self.toasts arrayByAddingObjectsFromArray:sorted];
     NSInteger shown = 0;
     for (SBCard *c in all) {
         CGFloat y = growUp ? anchor : anchor - c.height;

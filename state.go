@@ -281,6 +281,31 @@ func (s *Store) LiveEnvs(excludeSid string) []map[string]string {
 	return s.liveEnvsLocked(excludeSid)
 }
 
+// KnownProjectDirs: every project folder Switchboard currently knows about,
+// from live sessions and pending requests - the same universe the Rules and
+// Skills dialogs use for their project dropdowns, so skill listing doesn't
+// need to scan the filesystem for folders it has no other reason to know.
+func (s *Store) KnownProjectDirs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[string]bool{}
+	var out []string
+	for _, x := range s.sessions {
+		if x.Cwd != "" && !seen[x.Cwd] {
+			seen[x.Cwd] = true
+			out = append(out, x.Cwd)
+		}
+	}
+	for _, p := range s.pending {
+		cwd := str(p.Event, "cwd")
+		if cwd != "" && !seen[cwd] {
+			seen[cwd] = true
+			out = append(out, cwd)
+		}
+	}
+	return out
+}
+
 func (s *Store) addLog(x *Session, kind, text string) {
 	s.log = append(s.log, LogEntry{T: now(), Session: x.ID, Project: x.Project, Kind: kind, Text: text})
 	if len(s.log) > 300 {

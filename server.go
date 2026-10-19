@@ -92,6 +92,8 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, srv.store.Snapshot())
 		case "/api/stream":
 			srv.stream(w, r)
+		case "/api/skills":
+			writeJSON(w, 200, listSkills(srv.store.KnownProjectDirs()))
 		default:
 			writeJSON(w, 404, map[string]any{"error": "not found"})
 		}
@@ -134,15 +136,7 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/compact":
 		srv.compact(w, body)
 	case "/api/skills":
-		if err := createSkill(str(body, "name"), str(body, "description"), str(body, "content"), str(body, "scope")); err != nil {
-			code := 400
-			if strings.Contains(err.Error(), "already exists") {
-				code = 409
-			}
-			writeJSON(w, code, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, 200, map[string]any{"ok": true})
+		srv.skills(w, body)
 	default:
 		writeJSON(w, 404, map[string]any{"error": "not found"})
 	}
@@ -282,6 +276,29 @@ func (srv *Server) rules(w http.ResponseWriter, body map[string]any) {
 	case "delete":
 		srv.store.Rules.Delete(str(body, "id"))
 		srv.store.Touch()
+		writeJSON(w, 200, map[string]any{"ok": true})
+	default:
+		writeJSON(w, 400, map[string]any{"error": "unknown action"})
+	}
+}
+
+func (srv *Server) skills(w http.ResponseWriter, body map[string]any) {
+	switch str(body, "action") {
+	case "create":
+		if err := createSkill(str(body, "name"), str(body, "description"), str(body, "content"), str(body, "scope")); err != nil {
+			code := 400
+			if strings.Contains(err.Error(), "already exists") {
+				code = 409
+			}
+			writeJSON(w, code, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+	case "delete":
+		if err := deleteSkill(str(body, "name"), str(body, "scope")); err != nil {
+			writeJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
 		writeJSON(w, 200, map[string]any{"ok": true})
 	default:
 		writeJSON(w, 400, map[string]any{"error": "unknown action"})
