@@ -31,6 +31,20 @@ func ambiguousJetBrains(others []map[string]string, env map[string]string) bool 
 	return false
 }
 
+// canTypeReason explains a disabled Compact button for the dashboard
+// tooltip - distinguishing "unsupported terminal" from "ambiguous with
+// another live JetBrains session", which otherwise look identical (both
+// just can_type:false) and are easy to mistake for the same cause.
+func canTypeReason(env map[string]string, others []map[string]string) (bool, string) {
+	if !canSendText(env) {
+		return false, ""
+	}
+	if ambiguousJetBrains(others, env) {
+		return false, "Another Claude session is also open in a JetBrains IDE right now - Switchboard can't tell terminal tabs (or windows) apart there, so Compact is disabled here until only one JetBrains session is active."
+	}
+	return true, ""
+}
+
 func itermUUID(env map[string]string) string {
 	if i := strings.Index(env["ITERM_SESSION_ID"], ":"); i >= 0 {
 		return env["ITERM_SESSION_ID"][i+1:]

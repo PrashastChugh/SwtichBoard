@@ -39,7 +39,8 @@ type Session struct {
 	Updated          float64           `json:"updated"`
 	Tokens           map[string]any    `json:"tokens"`
 	Error            string            `json:"error"`
-	CanType          bool              `json:"can_type"` // Switchboard can type into its terminal (for /compact)
+	CanType          bool              `json:"can_type"`        // Switchboard can type into its terminal (for /compact)
+	CanTypeReason    string            `json:"can_type_reason"` // why not, when it's a more specific reason than "unsupported terminal"
 	Env              map[string]string `json:"-"`
 	compactSuggested bool              // already nudged "good time to compact" this time above threshold
 }
@@ -253,7 +254,7 @@ func (s *Store) session(ev map[string]any) *Session {
 	for k, v := range envOf(ev) {
 		x.Env[k] = v
 	}
-	x.CanType = canSendText(x.Env) && !ambiguousJetBrains(s.liveEnvsLocked(sid), x.Env)
+	x.CanType, x.CanTypeReason = canTypeReason(x.Env, s.liveEnvsLocked(sid))
 	if tp := str(ev, "transcript_path"); tp != "" && s.meters[sid] == nil {
 		s.meters[sid] = newMeter(tp)
 	}

@@ -12,6 +12,10 @@ func canSendText(env map[string]string) bool { return hasTmux(env) || hasWezterm
 
 func ambiguousJetBrains(others []map[string]string, env map[string]string) bool { return false }
 
+func canTypeReason(env map[string]string, others []map[string]string) (bool, string) {
+	return canSendText(env), ""
+}
+
 func sendText(env map[string]string, text string) error {
 	switch {
 	case hasTmux(env):

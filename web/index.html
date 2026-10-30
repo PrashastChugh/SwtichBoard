@@ -359,7 +359,7 @@ function renderLines() {
       const pct = t ? Math.round((t.context / win) * 100) : 0;
       const tok = t ? `<span class="${pct >= 70 ? "full" : ""}" title="Context now: ${t.context.toLocaleString()} tokens (about ${pct}% of ${k(win)})&#10;Output: ${t.output.toLocaleString()}&#10;Cache reads: ${t.cache_read.toLocaleString()}&#10;Cache writes: ${t.cache_write.toLocaleString()}&#10;Fresh input: ${t.input.toLocaleString()}&#10;Cache hit rate: ${t.cache_hit == null ? "–" : Math.round(t.cache_hit * 100) + "%"}${t.model ? "&#10;Model: " + esc(t.model) : ""}">${k(t.context)} ctx (${pct}%)</span>` : "–";
       const busy = !(s.status === "idle" || s.status === "needs_input");
-      const why = s.status === "ended" ? "Session closed" : !s.can_type ? "Switchboard can't type into this terminal (works with iTerm2, Apple Terminal, tmux, WezTerm, JetBrains IDEs)" : busy ? "Available when it's your turn" : "Summarize the conversation to free up context";
+      const why = s.status === "ended" ? "Session closed" : !s.can_type ? (s.can_type_reason || "Switchboard can't type into this terminal (works with iTerm2, Apple Terminal, tmux, WezTerm, JetBrains IDEs)") : busy ? "Available when it's your turn" : "Summarize the conversation to free up context";
       const compactBtn = s.status === "ended" ? "" : `<button class="btn small" data-compact="${esc(s.id)}" ${busy || !s.can_type ? "disabled" : ""} title="${esc(why)}">Compact</button>`;
       const flash = lastStatus[s.id] && lastStatus[s.id] !== s.status && (s.status === "needs_permission" || s.status === "needs_input") ? "flash" : "";
       return `<div class="row ${flash}" id="row-${esc(s.id)}">
