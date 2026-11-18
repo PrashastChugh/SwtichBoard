@@ -20,6 +20,7 @@ var sbHome = func() string {
 
 func configPath() string { return filepath.Join(sbHome, "config.json") }
 func rulesPath() string  { return filepath.Join(sbHome, "rules.json") }
+func namesPath() string  { return filepath.Join(sbHome, "names.json") }
 func backupDir() string  { return filepath.Join(sbHome, "backups") }
 
 type Config struct {

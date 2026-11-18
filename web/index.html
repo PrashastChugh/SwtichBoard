@@ -105,6 +105,12 @@ pre.code { font: 13px/1.5 var(--mono); background: var(--panel); border: 1px sol
 .row.flash { animation: flash 1.2s ease-out; }
 @keyframes flash { from { background: var(--amber-soft); } }
 .pname { font-weight: 500; }
+.ptitle { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
+.ptitle:hover { color: var(--text, inherit); }
+.ptitle .pen { opacity: 0; margin-left: 4px; }
+.ptitle:hover .pen { opacity: .7; }
+.ptitle.none { font-style: italic; opacity: .6; }
+.rename-in { width: 100%; font: inherit; font-size: 13px; padding: 1px 4px; box-sizing: border-box; }
 .pdir { font: 12px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .doing { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prompt { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -346,6 +352,7 @@ function updateTimers() {
 let lastStatus = {};
 function renderLines() {
   const el = $("lines");
+  if (document.activeElement && document.activeElement.classList.contains("rename-in")) return; // mid-edit: don't wipe the field
   if (!S.sessions.length) {
     el.innerHTML = `<div class="empty" style="border:0">No sessions yet. Start <code>claude</code> in any project and it shows up here. If nothing appears, run <code>python switchboard.py install</code>.</div>`;
     return;
@@ -364,7 +371,7 @@ function renderLines() {
       const flash = lastStatus[s.id] && lastStatus[s.id] !== s.status && (s.status === "needs_permission" || s.status === "needs_input") ? "flash" : "";
       return `<div class="row ${flash}" id="row-${esc(s.id)}">
         <span class="lamp ${s.status}"></span>
-        <span style="min-width:0"><div class="pname">${esc(s.project)}</div><div class="pdir" title="${esc(s.cwd)}">${esc(s.cwd)}</div></span>
+        <span style="min-width:0"><div class="pname">${esc(s.project)}</div><div class="ptitle ${s.title ? "" : "none"}" data-rename="${esc(s.id)}" title="${s.name ? "Your name for this session. " : s.title ? "Claude's title for this session. " : ""}Click to rename">${s.title ? esc(s.title) : "Add a name"}<span class="pen">✎</span></div><div class="pdir" title="${esc(s.cwd)}">${esc(s.cwd)}</div></span>
         <span class="st-${s.status}">${esc(STATUS[s.status] || s.status)}</span>
         <span style="min-width:0"><div class="doing" title="${esc(s.activity)}">${esc(s.activity)}</div>${s.last_prompt ? `<div class="prompt" title="${esc(s.last_prompt)}">${esc(s.last_prompt)}</div>` : ""}</span>
         <span class="tok">${tok}</span>
@@ -383,7 +390,7 @@ function renderLog() {
     if (seen.has(s.id)) continue;
     seen.add(s.id);
     const dupe = S.sessions.filter((x) => x.project === s.project).length > 1;
-    opts.push(`<option value="${esc(s.id)}">${esc(dupe ? `${s.project} (${s.id.slice(0, 6)})` : s.project)}</option>`);
+    opts.push(`<option value="${esc(s.id)}">${esc(s.title ? `${s.project} · ${s.title}` : dupe ? `${s.project} (${s.id.slice(0, 6)})` : s.project)}</option>`);
   }
   sel.innerHTML = opts.join("");
   sel.value = [...sel.options].some((o) => o.value === logFilter) ? logFilter : (logFilter = "");
@@ -500,13 +507,28 @@ document.addEventListener("keydown", (e) => {
   else if (key === "t") { api("/api/focus", { session_id: p.session_id }); decide(p.id, "terminal"); }
   else if (key === "d") { e.preventDefault(); denyOpen.add(p.id); renderQueue(true); }
 });
+$("lines").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-rename]"); if (!t || t.querySelector("input")) return;
+  const s = S.sessions.find((x) => x.id === t.dataset.rename); if (!s) return;
+  const inp = document.createElement("input");
+  inp.className = "rename-in"; inp.maxLength = 80; inp.value = s.title || ""; inp.placeholder = "Name this session (empty = Claude's title)";
+  let done = false;
+  const finish = async (save) => {
+    if (done) return; done = true;
+    if (save && inp.value.trim() !== (s.name || "")) await api("/api/rename", { session_id: s.id, name: inp.value });
+    inp.blur(); renderLines();
+  };
+  inp.addEventListener("keydown", (ev) => { if (ev.key === "Enter") finish(true); else if (ev.key === "Escape") finish(false); ev.stopPropagation(); });
+  inp.addEventListener("blur", () => finish(true));
+  t.textContent = ""; t.appendChild(inp); inp.focus(); inp.select();
+});
 let compactSid = null;
 $("lines").addEventListener("click", (e) => {
   const b = e.target.closest("[data-compact]"); if (!b || b.disabled) return;
   const s = S.sessions.find((x) => x.id === b.dataset.compact); if (!s) return;
   compactSid = s.id;
   const t = s.tokens, win = S.context_window || 200000;
-  $("cTitle").textContent = `Compact ${s.project}?`;
+  $("cTitle").textContent = `Compact ${s.title ? s.project + " · " + s.title : s.project}?`;
   $("cInfo").textContent = t ? `It's using about ${k(t.context)} tokens of context right now (${Math.round((t.context / win) * 100)}%).` : "";
   $("cErr").textContent = ""; $("cFocus").value = "";
   $("compactDlg").showModal(); $("cFocus").focus();

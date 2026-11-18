@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -29,18 +30,21 @@ type UI interface {
 }
 
 type Session struct {
-	ID               string            `json:"id"`
-	Cwd              string            `json:"cwd"`
-	Project          string            `json:"project"`
-	Status           string            `json:"status"` // working, needs_permission, needs_input, idle, error, ended
-	Activity         string            `json:"activity"`
-	LastPrompt       string            `json:"last_prompt"`
-	Started          float64           `json:"started"`
-	Updated          float64           `json:"updated"`
-	Tokens           map[string]any    `json:"tokens"`
-	Error            string            `json:"error"`
-	CanType          bool              `json:"can_type"`        // Switchboard can type into its terminal (for /compact)
-	CanTypeReason    string            `json:"can_type_reason"` // why not, when it's a more specific reason than "unsupported terminal"
+	ID               string         `json:"id"`
+	Cwd              string         `json:"cwd"`
+	Project          string         `json:"project"`
+	Status           string         `json:"status"` // working, needs_permission, needs_input, idle, error, ended
+	Activity         string         `json:"activity"`
+	LastPrompt       string         `json:"last_prompt"`
+	Started          float64        `json:"started"`
+	Updated          float64        `json:"updated"`
+	Tokens           map[string]any `json:"tokens"`
+	Error            string         `json:"error"`
+	CanType          bool           `json:"can_type"`        // Switchboard can type into its terminal (for /compact)
+	CanTypeReason    string         `json:"can_type_reason"` // why not, when it's a more specific reason than "unsupported terminal"
+	Title            string         `json:"title"`           // what to show: your name for it, else Claude's title
+	Name             string         `json:"name"`            // your own name (kept in names.json)
+	claudeTitle      string
 	Env              map[string]string `json:"-"`
 	compactSuggested bool              // already nudged "good time to compact" this time above threshold
 }
@@ -122,15 +126,77 @@ type Store struct {
 	clients   map[chan []byte]bool
 	changed   chan struct{}
 	lastAlert map[string]float64
+	names     map[string]string // session id -> your own name for it
 	ui        UI
 }
 
 func NewStore(cfg *Config) *Store {
 	s := &Store{cfg: cfg, sessions: map[string]*Session{}, meters: map[string]*TranscriptMeter{},
 		Rules: loadRules(), clients: map[chan []byte]bool{}, changed: make(chan struct{}, 1),
-		lastAlert: map[string]float64{}}
+		lastAlert: map[string]float64{}, names: loadNames()}
 	go s.broadcaster()
+	go s.watchTranscripts()
 	return s
+}
+
+// watchTranscripts re-reads any transcript that grew. Hooks only fire on
+// events, so an idle session (e.g. right after /compact) would otherwise keep
+// showing its old context size until the next prompt.
+func (s *Store) watchTranscripts() {
+	for range time.Tick(3 * time.Second) {
+		s.mu.Lock()
+		var stale []string
+		for sid, m := range s.meters {
+			if x := s.sessions[sid]; x != nil && x.Status != "ended" && m.Grew() {
+				stale = append(stale, sid)
+			}
+		}
+		s.mu.Unlock()
+		for _, sid := range stale {
+			s.RefreshTokens(sid)
+		}
+	}
+}
+
+func loadNames() map[string]string {
+	names := map[string]string{}
+	if b, err := os.ReadFile(namesPath()); err == nil {
+		_ = json.Unmarshal(b, &names)
+	}
+	return names
+}
+
+func (x *Session) refreshTitle() {
+	x.Title = x.Name
+	if x.Title == "" {
+		x.Title = x.claudeTitle
+	}
+}
+
+// SetName gives a session your own name; an empty name goes back to Claude's.
+func (s *Store) SetName(sid, name string) bool {
+	name = strings.TrimSpace(cleanLine(name, 80))
+	s.mu.Lock()
+	x := s.sessions[sid]
+	if x == nil {
+		s.mu.Unlock()
+		return false
+	}
+	if name == "" {
+		delete(s.names, sid)
+	} else {
+		s.names[sid] = name
+	}
+	x.Name = name
+	x.refreshTitle()
+	snap := make(map[string]string, len(s.names))
+	for k, v := range s.names {
+		snap[k] = v
+	}
+	s.mu.Unlock()
+	_ = writeJSONAtomic(namesPath(), snap)
+	s.Touch()
+	return true
 }
 
 // ----- live updates ------------------------------------------------------
@@ -247,14 +313,15 @@ func (s *Store) session(ev map[string]any) *Session {
 	if x == nil {
 		cwd := str(ev, "cwd")
 		x = &Session{ID: sid, Cwd: cwd, Project: projectName(cwd), Status: "idle", Activity: "Session started",
-			Started: t, Env: map[string]string{}}
+			Started: t, Env: map[string]string{}, Name: s.names[sid]}
+		x.refreshTitle()
 		s.sessions[sid] = x
 	}
 	x.Updated = t
 	for k, v := range envOf(ev) {
 		x.Env[k] = v
 	}
-	x.CanType, x.CanTypeReason = canTypeReason(x.Env, s.liveEnvsLocked(sid))
+	x.CanType, x.CanTypeReason = canTypeReason(withCwd(x.Env, x.Cwd), s.liveEnvsLocked(sid))
 	if tp := str(ev, "transcript_path"); tp != "" && s.meters[sid] == nil {
 		s.meters[sid] = newMeter(tp)
 	}
@@ -270,8 +337,19 @@ func (s *Store) liveEnvsLocked(excludeSid string) []map[string]string {
 		if id == excludeSid || x.Status == "ended" {
 			continue
 		}
-		out = append(out, x.Env)
+		out = append(out, withCwd(x.Env, x.Cwd))
 	}
+	return out
+}
+
+// withCwd copies env and adds the session folder as SB_CWD, which the
+// JetBrains window matching needs.
+func withCwd(env map[string]string, cwd string) map[string]string {
+	out := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		out[k] = v
+	}
+	out["SB_CWD"] = cwd
 	return out
 }
 
@@ -355,6 +433,7 @@ func (s *Store) RefreshTokens(sid string) {
 		}
 		m.Update() // only this goroutine family touches the meter's file state
 		sum := m.Summary()
+		title := m.Title()
 		if model, _ := sum["model"].(string); model != "" {
 			if w := contextWindowFor(model); w > 0 {
 				win = w
@@ -367,6 +446,8 @@ func (s *Store) RefreshTokens(sid string) {
 		var alertPct int
 		if x != nil {
 			x.Tokens = sum
+			x.claudeTitle = title
+			x.refreshTitle()
 			if ctx, ok := sum["context"].(int64); ok && win > 0 {
 				pct := float64(ctx) / float64(win)
 				switch {
@@ -395,6 +476,22 @@ func (s *Store) releaseSession(sid, toolUseID string) {
 			continue
 		}
 		if toolUseID == "" || str(p.Event, "tool_use_id") == toolUseID {
+			p.Resolve("", "", nil)
+		}
+	}
+}
+
+// releaseSameCall frees a held card whose request has no tool_use_id (Claude
+// Code's permission requests may not carry one) once the same tool call
+// finishes - i.e. you answered it in the terminal instead.
+func (s *Store) releaseSameCall(sid string, done map[string]any) {
+	want, _ := json.Marshal(obj(done, "tool_input"))
+	for _, p := range s.pending {
+		if str(p.Event, "session_id") != sid || str(p.Event, "tool_use_id") != "" ||
+			str(p.Event, "tool_name") != str(done, "tool_name") {
+			continue
+		}
+		if got, _ := json.Marshal(obj(p.Event, "tool_input")); string(got) == string(want) {
 			p.Resolve("", "", nil)
 		}
 	}
@@ -466,6 +563,7 @@ func (s *Store) HandleEvent(ev map[string]any) {
 		if id := str(ev, "tool_use_id"); id != "" {
 			s.releaseSession(sid, id)
 		}
+		s.releaseSameCall(sid, ev)
 		if !s.hasPending(sid) {
 			x.Status = "working"
 		}

@@ -133,6 +133,9 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		env := srv.store.SessionEnv(str(body, "session_id"))
 		showTerminal(env)
 		writeJSON(w, 200, map[string]any{"ok": len(env) > 0})
+	case "/api/rename":
+		ok := srv.store.SetName(str(body, "session_id"), str(body, "name"))
+		writeJSON(w, map[bool]int{true: 200, false: 404}[ok], map[string]any{"ok": ok})
 	case "/api/compact":
 		srv.compact(w, body)
 	case "/api/skills":
@@ -332,16 +335,17 @@ func (srv *Server) doCompact(sid, focus string) (ok bool, errMsg string) {
 	if x.Status == "working" || x.Status == "needs_permission" || srv.store.hasPendingLocked(sid) {
 		return false, "Claude is busy in that session. Compact when it's your turn."
 	}
-	if ambiguousJetBrains(srv.store.LiveEnvs(sid), x.Env) {
-		return false, "Another Claude session is also open in a JetBrains IDE right now - Switchboard can't tell " +
-			"terminal tabs (or even separate windows) apart there, so compacting here risks typing into the wrong " +
-			"session. Finish or close the other one first, or run /compact yourself in this session's terminal."
+	env := withCwd(x.Env, x.Cwd)
+	if ambiguousJetBrains(srv.store.LiveEnvs(sid), env) {
+		return false, "Another Claude session is open in the same JetBrains project - Switchboard can't tell their " +
+			"terminal tabs apart, so compacting here risks typing into the wrong session. Finish or close the " +
+			"other one first, or run /compact yourself in this session's terminal."
 	}
 	text := "/compact"
 	if f := cleanLine(focus, 400); f != "" {
 		text += " " + f
 	}
-	if err := sendText(x.Env, text); err != nil {
+	if err := sendText(env, text); err != nil {
 		return false, err.Error()
 	}
 	srv.store.LogFor(sid, "compact", "Sent "+clip(text, 120))

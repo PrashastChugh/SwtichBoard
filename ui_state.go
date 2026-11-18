@@ -25,6 +25,7 @@ type uiPending struct {
 	SessionID string       `json:"session_id"`
 	Kind      string       `json:"kind"`
 	Project   string       `json:"project"`
+	Title     string       `json:"title"`
 	Verb      string       `json:"verb"`
 	Code      string       `json:"code"`
 	Created   float64      `json:"created"`
@@ -34,6 +35,7 @@ type uiPending struct {
 type uiSession struct {
 	ID       string `json:"id"`
 	Project  string `json:"project"`
+	Title    string `json:"title"`
 	Status   string `json:"status"`
 	Activity string `json:"activity"`
 }
@@ -144,7 +146,7 @@ func (s *Store) UIState() uiStateT {
 	}
 	sortSessions(live)
 	for i, x := range live {
-		st.Sessions = append(st.Sessions, uiSession{ID: x.ID, Project: x.Project, Status: x.Status, Activity: x.Activity})
+		st.Sessions = append(st.Sessions, uiSession{ID: x.ID, Project: x.Project, Title: x.Title, Status: x.Status, Activity: x.Activity})
 		if i < 10 {
 			d := statusDot[x.Status]
 			if d == "" {
@@ -162,6 +164,9 @@ func (s *Store) UIState() uiStateT {
 		subject := subjectOf(tool, ti)
 		up := uiPending{ID: p.ID, SessionID: str(p.Event, "session_id"), Kind: p.Kind,
 			Project: projectName(str(p.Event, "cwd")), Created: p.Created}
+		if x := s.sessions[up.SessionID]; x != nil {
+			up.Title = x.Title
+		}
 		up.Questions = []uiQuestion{}
 		if p.Kind == "question" {
 			up.Questions = append(up.Questions, questionsOf(ti)...)

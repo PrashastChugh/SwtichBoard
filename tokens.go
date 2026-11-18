@@ -56,6 +56,8 @@ type TranscriptMeter struct {
 	byID   map[string][4]int64 // input, output, cache_read, cache_write
 	last   [4]int64
 	model  string
+	// session titles Claude Code writes into the transcript (/rename, or auto)
+	custom, aiTitle, agentName string
 }
 
 func newMeter(path string) *TranscriptMeter {
@@ -76,6 +78,14 @@ type transcriptLine struct {
 	} `json:"message"`
 }
 
+// Grew reports whether the transcript has bytes Update hasn't read yet.
+func (m *TranscriptMeter) Grew() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, err := os.Stat(m.path)
+	return err == nil && st.Size() != m.offset
+}
+
 func (m *TranscriptMeter) Update() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -85,6 +95,7 @@ func (m *TranscriptMeter) Update() {
 	}
 	if st.Size() < m.offset { // rewritten: start over
 		m.offset, m.tail, m.byID, m.last, m.model = 0, nil, map[string][4]int64{}, [4]int64{}, ""
+		m.custom, m.aiTitle, m.agentName = "", "", ""
 	}
 	if st.Size() == m.offset {
 		return
@@ -106,6 +117,14 @@ func (m *TranscriptMeter) Update() {
 	lines := bytes.Split(data, []byte("\n"))
 	m.tail = append([]byte{}, lines[len(lines)-1]...)
 	for _, line := range lines[:len(lines)-1] {
+		if isTitleLine(line) {
+			m.readTitle(line)
+			continue
+		}
+		if bytes.Contains(line, []byte(`"compact_boundary"`)) {
+			m.readCompact(line)
+			continue
+		}
 		if !bytes.Contains(line, []byte(`"usage"`)) {
 			continue
 		}
@@ -128,6 +147,68 @@ func (m *TranscriptMeter) Update() {
 			m.model = tl.Message.Model
 		}
 	}
+}
+
+// readCompact: a /compact shrinks the context but adds no model reply, so the
+// last usage block is stale. Claude Code records the new size as postTokens.
+func (m *TranscriptMeter) readCompact(line []byte) {
+	var cl struct {
+		Subtype string `json:"subtype"`
+		Meta    struct {
+			Post int64 `json:"postTokens"`
+		} `json:"compactMetadata"`
+	}
+	if json.Unmarshal(line, &cl) != nil || cl.Subtype != "compact_boundary" || cl.Meta.Post <= 0 {
+		return
+	}
+	m.last = [4]int64{cl.Meta.Post, 0, 0, 0}
+}
+
+var titleLinePrefixes = [][]byte{
+	[]byte(`{"type":"custom-title"`), []byte(`{"type":"ai-title"`), []byte(`{"type":"agent-name"`),
+}
+
+func isTitleLine(line []byte) bool {
+	for _, p := range titleLinePrefixes {
+		if bytes.HasPrefix(line, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// readTitle picks up custom-title (/rename), ai-title and agent-name lines.
+func (m *TranscriptMeter) readTitle(line []byte) {
+	var tl struct {
+		Type        string `json:"type"`
+		CustomTitle string `json:"customTitle"`
+		AITitle     string `json:"aiTitle"`
+		AgentName   string `json:"agentName"`
+	}
+	if json.Unmarshal(line, &tl) != nil {
+		return
+	}
+	switch tl.Type {
+	case "custom-title":
+		m.custom = tl.CustomTitle
+	case "ai-title":
+		m.aiTitle = tl.AITitle
+	case "agent-name":
+		m.agentName = tl.AgentName
+	}
+}
+
+// Title is Claude Code's own name for the session: a /rename wins, then its
+// auto-generated title.
+func (m *TranscriptMeter) Title() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range []string{m.custom, m.aiTitle, m.agentName} {
+		if t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 func (m *TranscriptMeter) Summary() map[string]any {

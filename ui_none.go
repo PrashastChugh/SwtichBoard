@@ -9,4 +9,4 @@ func runNativeUI(srv *Server) {}
 
 func showDashboard(url string) { openBrowser(url) }
 
-func sendKeystrokesNative(bundleID, text string) bool { return false }
+func sendKeystrokesNative(bundleID, cwd, text string) int { return 0 }

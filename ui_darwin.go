@@ -58,11 +58,13 @@ func showDashboard(url string) {
 // sendKeystrokesNative types text into the given app via Core Graphics
 // events from inside this process - so the Accessibility permission this
 // needs is scoped to switchboard itself, not a shared system interpreter.
-func sendKeystrokesNative(bundleID, text string) bool {
-	cb, ct := C.CString(bundleID), C.CString(text)
+// Returns 0 (no Accessibility permission), 1 (typed), or why the project's window couldn't be picked.
+func sendKeystrokesNative(bundleID, cwd, text string) int {
+	cb, cc, ct := C.CString(bundleID), C.CString(cwd), C.CString(text)
 	defer C.free(unsafe.Pointer(cb))
+	defer C.free(unsafe.Pointer(cc))
 	defer C.free(unsafe.Pointer(ct))
-	return C.SBSendKeystrokes(cb, ct) != 0
+	return int(C.SBSendKeystrokes(cb, ct, cc))
 }
 
 // runNativeUI shows the widget, cards and menu bar icon. Blocks until you quit.

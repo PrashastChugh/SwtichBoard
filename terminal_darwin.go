@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -14,17 +15,22 @@ const appleTerminalID = "com.apple.Terminal"
 func isJetBrains(app string) bool { return strings.HasPrefix(app, "com.jetbrains.") }
 
 // ambiguousJetBrains: true if env is a JetBrains terminal and another live
-// session is also using a JetBrains IDE. Activation targets the app, not a
-// window or tab - with two such sessions there's no way to tell them apart,
-// so typing here risks landing in the wrong one's terminal entirely (not
-// just the wrong tab of the same window - confirmed 2026-10-15: it hit a
-// different window's session, broader than first scoped).
+// session shares its project. Switchboard picks the IDE window by project
+// name, so sessions in different projects are fine, but two sessions in the
+// same project (or one nested in the other, or with an unknown folder) have
+// the same window and can't be told apart by their terminal tabs.
 func ambiguousJetBrains(others []map[string]string, env map[string]string) bool {
 	if !isJetBrains(appOf(env)) {
 		return false
 	}
+	cwd := env["SB_CWD"]
 	for _, o := range others {
-		if isJetBrains(appOf(o)) {
+		if !isJetBrains(appOf(o)) {
+			continue
+		}
+		oc := o["SB_CWD"]
+		if cwd == "" || oc == "" || cwd == oc ||
+			strings.HasPrefix(oc, cwd+"/") || strings.HasPrefix(cwd, oc+"/") {
 			return true
 		}
 	}
@@ -40,7 +46,7 @@ func canTypeReason(env map[string]string, others []map[string]string) (bool, str
 		return false, ""
 	}
 	if ambiguousJetBrains(others, env) {
-		return false, "Another Claude session is also open in a JetBrains IDE right now - Switchboard can't tell terminal tabs (or windows) apart there, so Compact is disabled here until only one JetBrains session is active."
+		return false, "Another Claude session is open in the same JetBrains project - Switchboard can't tell their terminal tabs apart, so Compact is disabled here until only one of them is active."
 	}
 	return true, ""
 }
@@ -157,25 +163,23 @@ func canSendText(env map[string]string) bool {
 }
 
 // jetbrainsSend: JetBrains IDEs have no AppleScript dictionary for their
-// terminal tabs, so there's no way to address a session directly like the
-// other terminals below. This activates the IDE and synthesizes the
-// keystrokes itself (Core Graphics, in ui_darwin_impl.h) rather than
-// shelling out to osascript/System Events, so the Accessibility permission
-// this needs is scoped to switchboard alone, not the shared AppleScript
-// interpreter every app on the Mac can invoke.
-// ponytail: keystrokes go wherever focus lands in the JetBrains app -
-// confirmed 2026-10-15 this isn't even window-scoped, let alone tab-scoped:
-// with two sessions each in their own JetBrains window, activation can
-// bring forward the wrong window entirely. ambiguousJetBrains (above) is
-// the guard: refuse to compact rather than risk hitting the wrong session.
-// Upgrade path if that matters: none via scripting - JetBrains exposes no
-// window/tab/session API to target.
-func jetbrainsSend(bundleID, text string) error {
-	if !sendKeystrokesNative(bundleID, text) {
-		return fmt.Errorf("couldn't type into the JetBrains IDE: switchboard needs Accessibility permission " +
-			"(System Settings → Privacy & Security → Accessibility → allow switchboard)")
+// terminal tabs, so Switchboard raises the project's window through the
+// Accessibility API (matched by project name) and synthesizes the keystrokes
+// itself (Core Graphics, in ui_darwin_impl.h). It refuses instead of guessing
+// when no window, several windows, or an unconfirmed focus come back.
+func jetbrainsSend(bundleID, cwd, text string) error {
+	switch sendKeystrokesNative(bundleID, cwd, text) {
+	case 1:
+		return nil
+	case 2:
+		return fmt.Errorf("couldn't find the JetBrains window for this project (%s). Open that project's window and try again", filepath.Base(cwd))
+	case 3:
+		return fmt.Errorf("more than one JetBrains window matches this project (%s), so Switchboard won't guess. Close the extra window and try again", filepath.Base(cwd))
+	case 4:
+		return fmt.Errorf("couldn't bring this project's JetBrains window to the front, so nothing was typed")
 	}
-	return nil
+	return fmt.Errorf("couldn't type into the JetBrains IDE: switchboard needs Accessibility permission " +
+		"(System Settings → Privacy & Security → Accessibility → allow switchboard)")
 }
 
 // sendText types a line into the session's terminal and presses Enter.
@@ -201,7 +205,7 @@ func sendText(env map[string]string, text string) error {
 		}
 		return nil
 	case isJetBrains(app):
-		return jetbrainsSend(app, text)
+		return jetbrainsSend(app, env["SB_CWD"], text)
 	}
 	return errNoTyping
 }

@@ -13,6 +13,11 @@ static void SBEmit(NSString *kind, NSString *ident, NSString *payload) {
 }
 
 static NSString *SBStr(id v) { return [v isKindOfClass:[NSString class]] ? (NSString *)v : @""; }
+// "project - name" when the session has a name, else just the project.
+static NSString *SBProjTitle(NSDictionary *d) {
+    NSString *p = SBStr(d[@"project"]), *t = SBStr(d[@"title"]);
+    return t.length ? [NSString stringWithFormat:@"%@ \u00B7 %@", p, t] : p;
+}
 static NSArray *SBArr(id v) { return [v isKindOfClass:[NSArray class]] ? (NSArray *)v : @[]; }
 static double SBNum(id v) { return [v respondsToSelector:@selector(doubleValue)] ? [v doubleValue] : 0; }
 
@@ -465,7 +470,7 @@ static double SBNow(void) { return [[NSDate date] timeIntervalSince1970]; }
 
     CGFloat y = h - kMargin - 20;
     SBLabel(v, @"●", NSMakeRect(14, y, 14, 20), 13, NO, NO, SBRGB(0.95, 0.68, 0.16, 1), 1);
-    SBLabel(v, SBStr(p[@"project"]), NSMakeRect(30, y, kCardW - 132, 20), 14, YES, NO, nil, 1);
+    SBLabel(v, SBProjTitle(p), NSMakeRect(30, y, kCardW - 132, 20), 14, YES, NO, nil, 1);
     c.timer = SBLabel(v, @"0:00", NSMakeRect(kCardW - 96, y, 56, 20), 12, NO, NO, SBRGB(1, 1, 1, 0.62), 1);
     c.timer.alignment = NSTextAlignmentRight;
     SBCloseButton(v, NSMakeRect(kCardW - 36, y - 2, 24, 24), c.targets, ^{
@@ -515,7 +520,7 @@ static double SBNow(void) { return [[NSDate date] timeIntervalSince1970]; }
 
     CGFloat y = h - kMargin - 20;
     SBLabel(v, @"●", NSMakeRect(14, y, 14, 20), 13, NO, NO, SBRGB(0.95, 0.68, 0.16, 1), 1);
-    SBLabel(v, [NSString stringWithFormat:@"%@ has a question", SBStr(p[@"project"])],
+    SBLabel(v, [NSString stringWithFormat:@"%@ has a question", SBProjTitle(p)],
             NSMakeRect(30, y, kCardW - 132, 20), 14, YES, NO, nil, 1);
     c.timer = SBLabel(v, @"0:00", NSMakeRect(kCardW - 96, y, 56, 20), 12, NO, NO, SBRGB(1, 1, 1, 0.62), 1);
     c.timer.alignment = NSTextAlignmentRight;
@@ -657,7 +662,7 @@ static double SBNow(void) { return [[NSDate date] timeIntervalSince1970]; }
             NSString *pid = SBStr(p[@"id"]), *sid = SBStr(p[@"session_id"]);
             BOOL question = [SBStr(p[@"kind"]) isEqualToString:@"question"];
             NSString *what = question ? @"has a question" : SBStr(p[@"verb"]);
-            NSMenuItem *parent = [self addItem:[NSString stringWithFormat:@"🟠 %@ %@", SBStr(p[@"project"]), what]
+            NSMenuItem *parent = [self addItem:[NSString stringWithFormat:@"🟠 %@ %@", SBProjTitle(p), what]
                                             to:menu keep:keep block:nil];
             NSMenu *sub = [NSMenu new];
             if (question) {
@@ -692,7 +697,7 @@ static double SBNow(void) { return [[NSDate date] timeIntervalSince1970]; }
     if (!sessions.count) [self addItem:@"No sessions yet. Start claude in any terminal." to:menu keep:keep block:nil];
     for (NSDictionary *s in sessions) {
         NSString *sid = SBStr(s[@"id"]), *status = SBStr(s[@"status"]);
-        NSString *title = [NSString stringWithFormat:@"%@ %@, %@", dots[status] ?: @"⚪️", SBStr(s[@"project"]), labels[status] ?: status];
+        NSString *title = [NSString stringWithFormat:@"%@ %@, %@", dots[status] ?: @"⚪️", SBProjTitle(s), labels[status] ?: status];
         [self addItem:title to:menu keep:keep block:^{ SBEmit(@"show", sid, @""); }];
     }
     [menu addItem:[NSMenuItem separatorItem]];
@@ -743,23 +748,79 @@ static void SBShowDashboard(const char *url) {
     });
 }
 
-// Synthesizes real keyboard events via Core Graphics (the same layer
-// System Events/osascript itself calls into) instead of shelling out to
-// osascript - so the Accessibility permission this requires is granted to
-// switchboard specifically, not the shared system AppleScript interpreter
-// every app and script on the Mac can invoke. Runs synchronously off the
-// main thread: CGEventPost and NSRunningApplication activation don't need
-// it, unlike the AppKit window code elsewhere in this file.
-static int SBSendKeystrokes(const char *bundleID, const char *text) {
+// Window titles in JetBrains IDEs start with the project name. A title matches
+// when it begins with name followed by a non-name character (so "api" doesn't
+// match "api-gateway"), or contains the full project path.
+static BOOL SBTitleIsProject(NSString *title, NSString *name, NSString *path) {
+    if (!title.length || !name.length) return NO;
+    if (path.length && [title containsString:path]) return YES;
+    if (![title hasPrefix:name]) return NO;
+    if (title.length == name.length) return YES;
+    unichar c = [title characterAtIndex:name.length];
+    return !([[NSCharacterSet alphanumericCharacterSet] characterIsMember:c] || c == '-' || c == '_' || c == '.');
+}
+
+// Raises the one window of the app that belongs to cwd's project and confirms it
+// became the focused window. Returns 1 ok, 2 no matching window, 3 several
+// match, 4 couldn't bring it to the front. Refuses rather than guesses.
+static int SBFocusProjectWindow(NSArray<NSRunningApplication *> *apps, NSString *cwd) {
+    NSRunningApplication *app = apps.firstObject;
+    if (!app) return 2;
+    AXUIElementRef ax = AXUIElementCreateApplication(app.processIdentifier);
+    CFArrayRef wins = NULL;
+    AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute, (CFTypeRef *)&wins);
+    NSArray *windows = wins ? CFBridgingRelease(wins) : @[];
+    NSMutableArray *hits = [NSMutableArray array];
+    NSString *dir = cwd;
+    NSString *home = NSHomeDirectory();
+    while (dir.length > 1 && ![dir isEqualToString:home] && hits.count == 0) {
+        NSString *name = dir.lastPathComponent;
+        for (id w in windows) {
+            CFTypeRef t = NULL;
+            AXUIElementCopyAttributeValue((__bridge AXUIElementRef)w, kAXTitleAttribute, &t);
+            NSString *title = t ? CFBridgingRelease(t) : nil;
+            if ([title isKindOfClass:[NSString class]] && SBTitleIsProject(title, name, dir)) [hits addObject:w];
+        }
+        dir = dir.stringByDeletingLastPathComponent;
+    }
+    int rc = 1;
+    if (hits.count == 0) rc = 2;
+    else if (hits.count > 1) rc = 3;
+    else {
+        AXUIElementRef win = (__bridge AXUIElementRef)hits[0];
+        [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+        AXUIElementPerformAction(win, kAXRaiseAction);
+        AXUIElementSetAttributeValue(ax, kAXFocusedWindowAttribute, win);
+        rc = 4;
+        for (int i = 0; i < 10 && rc != 1; i++) {
+            [NSThread sleepForTimeInterval:0.1];
+            CFTypeRef f = NULL;
+            AXUIElementCopyAttributeValue(ax, kAXFocusedWindowAttribute, &f);
+            if (f) {
+                if (CFEqual(f, win)) rc = 1;
+                CFRelease(f);
+            }
+        }
+    }
+    CFRelease(ax);
+    return rc;
+}
+
+// Synthesizes real keyboard events via Core Graphics instead of shelling out
+// to osascript - so the Accessibility permission this requires is granted to
+// switchboard specifically, not the shared system AppleScript interpreter.
+// Returns 0 without Accessibility permission, otherwise the
+// SBFocusProjectWindow code (1 = typed). Nothing is typed unless the right
+// project window is confirmed focused.
+static int SBSendKeystrokes(const char *bundleID, const char *text, const char *cwd) {
     NSDictionary *opts = @{(__bridge id)kAXTrustedCheckOptionPrompt : @YES};
     if (!AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)opts)) return 0;
 
     NSString *bid = [NSString stringWithUTF8String:bundleID];
     NSArray<NSRunningApplication *> *apps = [NSRunningApplication runningApplicationsWithBundleIdentifier:bid];
-    NSRunningApplication *app = apps.firstObject;
-    if (!app) return 0;
-    [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
-    [NSThread sleepForTimeInterval:0.3];
+    int rc = SBFocusProjectWindow(apps, [NSString stringWithUTF8String:cwd]);
+    if (rc != 1) return rc;
+    [NSThread sleepForTimeInterval:0.2];
 
     NSString *s = [NSString stringWithUTF8String:text];
     NSUInteger len = s.length;
