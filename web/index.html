@@ -160,7 +160,6 @@ dialog::backdrop { background: rgb(10 15 20 / .45); }
     <div class="spacer"></div>
     <div class="tools">
       <button class="btn" id="soundBtn" aria-pressed="true">Sound</button>
-      <button class="btn" id="alertBtn" aria-pressed="false">Browser alerts</button>
       <button class="btn" id="rulesBtn">Rules</button>
       <button class="btn" id="skillsBtn">Skills</button>
     </div>
@@ -454,11 +453,6 @@ function alertNew() {
   if (firstLoad) { firstLoad = false; return; }
   if (!fresh.length) return;
   chime();
-  if (prefs.alerts && document.hidden && "Notification" in window && Notification.permission === "granted") {
-    const p = fresh[0];
-    const n = new Notification(`${p.project} needs permission`, { body: `${p.tool}: ${p.subject || ""}`.slice(0, 180), tag: p.id });
-    n.onclick = () => { window.focus(); n.close(); };
-  }
 }
 
 /* ---------- live connection ---------- */
@@ -635,15 +629,8 @@ $("rlist").addEventListener("click", async (e) => {
 
 function syncToggles() {
   $("soundBtn").classList.toggle("on", prefs.sound); $("soundBtn").setAttribute("aria-pressed", prefs.sound);
-  $("alertBtn").classList.toggle("on", !!prefs.alerts); $("alertBtn").setAttribute("aria-pressed", !!prefs.alerts);
 }
 $("soundBtn").onclick = () => { prefs.sound = !prefs.sound; savePrefs(); syncToggles(); if (prefs.sound) chime(); };
-$("alertBtn").onclick = async () => {
-  if (!prefs.alerts && "Notification" in window && Notification.permission !== "granted") {
-    if ((await Notification.requestPermission()) !== "granted") return;
-  }
-  prefs.alerts = !prefs.alerts; savePrefs(); syncToggles();
-};
 
 syncToggles();
 setInterval(updateTimers, 1000);
