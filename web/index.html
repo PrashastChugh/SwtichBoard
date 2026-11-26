@@ -132,7 +132,18 @@ dialog { border: 1px solid var(--rule); border-radius: 12px; background: var(--r
 dialog::backdrop { background: rgb(10 15 20 / .45); }
 .rlist { margin: 8px 0 18px; display: grid; gap: 6px; }
 .rrow { display: grid; grid-template-columns: 64px 90px 1fr 150px auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--rule); font-size: 14px; }
-.skrow { display: grid; grid-template-columns: 160px 1fr 150px auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--rule); font-size: 14px; }
+.skrow { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: start; padding: 10px 0; border-top: 1px solid var(--rule); font-size: 14px; }
+.skrow .skdesc { grid-column: 1; color: var(--muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.skrow .skdesc.clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.skmore { grid-column: 1; justify-self: start; border: 0; background: none; color: var(--muted); font-size: 12px; text-decoration: underline; cursor: pointer; padding: 0; }
+.skrow .skmeta { grid-column: 1; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; color: var(--muted); }
+.skrow .skact { grid-column: 2; grid-row: 1 / span 3; align-self: start; }
+.skbadge { font-size: 11px; font-weight: 600; border-radius: 99px; padding: 1px 8px; border: 1px solid var(--rule); color: var(--muted); }
+.skbadge.ok { color: var(--green); border-color: var(--green); }
+.skbadge.warn { color: var(--amber); border-color: var(--amber); }
+.skbadge.off { color: var(--red); border-color: var(--red); }
+.dlgx { position: absolute; top: 10px; right: 12px; font-size: 22px; line-height: 1; padding: 2px 9px; }
+#skillsDlg { position: fixed; }
 .pill { font-size: 12px; font-weight: 600; border-radius: 99px; padding: 1px 8px; text-align: center; color: #fff; }
 .pill.allow { background: var(--green); } .pill.deny { background: var(--red); }
 .form { display: grid; grid-template-columns: 110px 130px 1fr; gap: 10px; }
@@ -203,12 +214,22 @@ dialog::backdrop { background: rgb(10 15 20 / .45); }
 </dialog>
 
 <dialog id="skillsDlg">
+  <button class="btn quiet dlgx" id="skX" aria-label="Close">&times;</button>
   <h2>Skills</h2>
   <p class="hint" style="margin-top:0">Writes a SKILL.md Claude Code picks up next time it looks for skills. Global skills are available in every project; a project-scoped skill only shows up when Claude Code is working in that folder. Only shows skills in projects Switchboard currently knows about (active or recently-pending sessions).</p>
-  <input id="skFilter" placeholder="Search skills by name or description" style="width:100%;margin-top:8px">
+  <div style="display:grid;grid-template-columns:1fr 190px;gap:10px;margin-top:8px">
+    <input id="skFilter" placeholder="Search skills by name or description">
+    <select id="skOrigin">
+      <option value="">All sources</option>
+      <option value="switchboard">Made in Switchboard</option>
+      <option value="own">Your own files</option>
+      <option value="synced">Synced from Claude</option>
+      <option value="plugin">Downloaded plugins</option>
+    </select>
+  </div>
   <p class="hint" id="skCount" style="margin:6px 0 0"></p>
   <div class="rlist" id="sklist" style="max-height:320px;overflow:auto"></div>
-  <h2>New skill</h2>
+  <h2 id="skNewTitle">New skill</h2>
   <div class="form">
     <div class="wide" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <label>Name<input id="skName" placeholder="my-skill-name"></label>
@@ -219,6 +240,7 @@ dialog::backdrop { background: rgb(10 15 20 / .45); }
   </div>
   <p class="hint" id="skErr" style="color:var(--red)"></p>
   <div class="dlg-actions">
+    <button class="btn quiet" id="skCancelEdit" hidden>Cancel edit</button>
     <button class="btn quiet" id="skClose">Close</button>
     <button class="btn allow" id="skSave">Save skill</button>
   </div>
@@ -588,18 +610,49 @@ $("dlgSave").onclick = async () => {
 };
 let allSkills = [];
 function skillScope(sc) {
-  return sc === "global" ? "Global" : sc.startsWith("plugin:") ? "Plugin · " + sc.slice(7) : sc.split(/[\\/]/).pop();
+  return sc === "global" ? "Global" : sc.startsWith("plugin:") ? "Plugin · " + sc.slice(7) : "Project · " + sc.split(/[\\/]/).pop();
 }
+const SK_ORIGIN = { switchboard: "Made in Switchboard", own: "Your own file", synced: "Synced from Claude", plugin: "Downloaded plugin" };
+const SK_STATUS = {
+  active: ["Active", "ok"], manual: ["Manual only (/name)", "warn"],
+  disabled: ["Plugin disabled", "off"], "not-enabled": ["Plugin not enabled", "off"],
+};
+function skAgo(t) {
+  if (!t) return "Never used";
+  const d = Date.now() / 1000 - t;
+  if (d < 60) return "Last used just now";
+  if (d < 3600) return `Last used ${Math.floor(d / 60)} min ago`;
+  if (d < 86400) return `Last used ${Math.floor(d / 3600)} h ago`;
+  if (d < 86400 * 30) return `Last used ${Math.floor(d / 86400)} d ago`;
+  return "Last used " + new Date(t * 1000).toLocaleDateString();
+}
+const skOpen = new Set();
+const skKey = (s) => s.scope + "|" + s.name;
+let skEditing = null;
 function paintSkills() {
-  const el = $("sklist"), q = $("skFilter").value.trim().toLowerCase();
-  const shown = allSkills.filter((s) => !q || (s.name + " " + s.description + " " + skillScope(s.scope)).toLowerCase().includes(q));
+  const el = $("sklist"), q = $("skFilter").value.trim().toLowerCase(), o = $("skOrigin").value;
+  const shown = allSkills.filter((s) => (!o || s.origin === o) &&
+    (!q || (s.name + " " + s.description + " " + skillScope(s.scope)).toLowerCase().includes(q)));
   $("skCount").textContent = allSkills.length ? `${shown.length} of ${allSkills.length} skills` : "";
   if (!shown.length) { el.innerHTML = `<p class="hint">${allSkills.length ? "No skills match." : "No skills yet."}</p>`; return; }
-  el.innerHTML = shown.map((s) => `
-    <div class="skrow"><strong>${esc(s.name)}</strong>
-    <span class="pdir" title="${esc(s.description)}">${esc(s.description)}</span>
-    <span class="pdir" title="${esc(s.scope)}">${esc(skillScope(s.scope))}</span>
-    ${s.readonly ? `<span class="pdir">read-only</span>` : `<button class="btn quiet" data-skdel="${esc(s.name)}" data-skscope="${esc(s.scope)}">Delete</button>`}</div>`).join("");
+  el.innerHTML = shown.map((s) => {
+    const [stText, stCls] = SK_STATUS[s.status] || [s.status, ""];
+    const src = (SK_ORIGIN[s.origin] || s.origin) + (s.origin === "plugin" && s.source ? " · " + s.source : "");
+    return `<div class="skrow">
+      <div><strong>${esc(s.name)}</strong> <span class="skbadge ${stCls}">${esc(stText)}</span></div>
+      <div class="skdesc ${skOpen.has(skKey(s)) ? "" : "clamp"}">${esc(s.description) || "<em>No description</em>"}</div>
+      <button class="skmore" data-skmore="${esc(skKey(s))}" hidden>${skOpen.has(skKey(s)) ? "Show less" : "Show more"}</button>
+      <div class="skmeta"><span>${esc(src)}</span><span>${esc(skillScope(s.scope))}</span>
+        <span title="Counted from Claude Code's saved conversations">${esc(skAgo(s.last_used))}${s.uses ? ` · used ${s.uses}×` : ""}</span>
+        <span title="${esc(s.path)}">${s.path ? "📄 file" : ""}</span></div>
+      <div class="skact">${s.readonly ? `<span class="pdir">read-only</span>` : `<button class="btn quiet" data-skedit="${esc(s.name)}" data-skscope="${esc(s.scope)}">Edit</button><button class="btn quiet" data-skdel="${esc(s.name)}" data-skscope="${esc(s.scope)}">Delete</button>`}</div>
+    </div>`;
+  }).join("");
+  // only offer "Show more" where the text is actually cut off (or already opened)
+  el.querySelectorAll(".skrow").forEach((row) => {
+    const d = row.querySelector(".skdesc"), m = row.querySelector(".skmore");
+    m.hidden = !(skOpen.has(m.dataset.skmore) || d.scrollHeight > d.clientHeight + 1);
+  });
 }
 async function renderSkills() {
   $("sklist").innerHTML = `<p class="hint">Loading…</p>`;
@@ -611,15 +664,61 @@ async function renderSkills() {
   paintSkills();
 }
 $("skFilter").oninput = paintSkills;
+$("skOrigin").onchange = paintSkills;
+$("skX").onclick = () => $("skillsDlg").close();
+function skForm(editing) {
+  skEditing = editing;
+  $("skName").disabled = $("skScope").disabled = !!editing;
+  $("skSave").textContent = editing ? "Save changes" : "Save skill";
+  $("skNewTitle").textContent = editing ? "Edit skill: " + editing.name : "New skill";
+  $("skCancelEdit").hidden = !editing;
+}
+$("skCancelEdit").onclick = () => {
+  $("skName").value = ""; $("skDesc").value = ""; $("skContent").value = ""; $("skErr").textContent = "";
+  skForm(null);
+};
 $("sklist").addEventListener("click", async (e) => {
+  const more = e.target.closest("[data-skmore]");
+  if (more) {
+    const k = more.dataset.skmore;
+    skOpen.has(k) ? skOpen.delete(k) : skOpen.add(k);
+    paintSkills();
+    return;
+  }
+  const ed = e.target.closest("[data-skedit]");
+  if (ed) {
+    const sk = allSkills.find((x) => x.name === ed.dataset.skedit && x.scope === ed.dataset.skscope);
+    if (!sk) return;
+    $("skErr").textContent = "";
+    const r = await fetch("/api/skills", { method: "POST", headers: { "Content-Type": "application/json", "X-Switchboard-Token": TOKEN }, body: JSON.stringify({ action: "get", name: sk.name, scope: sk.scope }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { $("skErr").textContent = d.error || "Couldn't open the skill."; return; }
+    if (![...$("skScope").options].some((o) => o.value === sk.scope)) {
+      $("skScope").insertAdjacentHTML("beforeend", `<option value="${esc(sk.scope)}">${esc(sk.scope.split(/[\\/]/).pop())}</option>`);
+    }
+    $("skName").value = sk.name; $("skScope").value = sk.scope;
+    $("skDesc").value = sk.description; $("skContent").value = d.content || "";
+    skForm({ name: sk.name, scope: sk.scope });
+    $("skNewTitle").scrollIntoView({ block: "nearest" });
+    $("skDesc").focus();
+    return;
+  }
   const b = e.target.closest("[data-skdel]"); if (!b) return;
   await api("/api/skills", { action: "delete", name: b.dataset.skdel, scope: b.dataset.skscope });
   renderSkills();
 });
-$("skillsBtn").onclick = () => {
-  $("skName").value = ""; $("skDesc").value = ""; $("skContent").value = ""; $("skErr").textContent = ""; $("skFilter").value = "";
+function fillScopes(dirs) {
+  const cur = $("skScope").value;
   $("skScope").innerHTML = `<option value="global">Global (every project)</option>` +
-    projectDirs().map((d) => `<option value="${esc(d)}">${esc(d.split(/[\\/]/).pop())}</option>`).join("");
+    dirs.map((d) => `<option value="${esc(d)}" title="${esc(d)}">${esc(d.split(/[\\/]/).pop())}</option>`).join("");
+  if ([...$("skScope").options].some((o) => o.value === cur)) $("skScope").value = cur;
+}
+$("skillsBtn").onclick = async () => {
+  $("skName").value = ""; $("skDesc").value = ""; $("skContent").value = ""; $("skErr").textContent = ""; $("skFilter").value = ""; $("skOrigin").value = ""; skForm(null);
+  fillScopes(projectDirs());
+  // also every folder you've used Claude Code in, not just sessions open right now
+  fetch("/api/skills", { method: "POST", headers: { "Content-Type": "application/json", "X-Switchboard-Token": TOKEN }, body: JSON.stringify({ action: "projects" }) })
+    .then((r) => r.json()).then((d) => { if (!skEditing) fillScopes(d.projects || []); }).catch(() => {});
   renderSkills();
   $("skillsDlg").showModal();
   $("skName").focus();
@@ -627,10 +726,11 @@ $("skillsBtn").onclick = () => {
 $("skClose").onclick = () => $("skillsDlg").close();
 $("skSave").onclick = async () => {
   $("skErr").textContent = "";
-  const skill = { action: "create", name: $("skName").value.trim(), description: $("skDesc").value.trim(), content: $("skContent").value.trim(), scope: $("skScope").value };
+  const skill = { action: skEditing ? "update" : "create", name: $("skName").value.trim(), description: $("skDesc").value.trim(), content: $("skContent").value.trim(), scope: $("skScope").value };
   const r = await fetch("/api/skills", { method: "POST", headers: { "Content-Type": "application/json", "X-Switchboard-Token": TOKEN }, body: JSON.stringify(skill) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { $("skErr").textContent = d.error || "Couldn't save the skill."; return; }
+  if (skEditing) { $("skCancelEdit").click(); renderSkills(); return; }
   $("skillsDlg").close();
 };
 

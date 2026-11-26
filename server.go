@@ -93,7 +93,7 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "/api/stream":
 			srv.stream(w, r)
 		case "/api/skills":
-			writeJSON(w, 200, listSkills(srv.store.KnownProjectDirs()))
+			writeJSON(w, 200, listSkills(srv.store.allProjectDirs()))
 		default:
 			writeJSON(w, 404, map[string]any{"error": "not found"})
 		}
@@ -294,6 +294,21 @@ func (srv *Server) skills(w http.ResponseWriter, body map[string]any) {
 				code = 409
 			}
 			writeJSON(w, code, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+	case "projects":
+		writeJSON(w, 200, map[string]any{"projects": srv.store.allProjectDirs()})
+	case "get":
+		content, err := skillContent(str(body, "name"), str(body, "scope"))
+		if err != nil {
+			writeJSON(w, 404, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"content": content})
+	case "update":
+		if err := updateSkill(str(body, "name"), str(body, "description"), str(body, "content"), str(body, "scope")); err != nil {
+			writeJSON(w, 400, map[string]any{"error": err.Error()})
 			return
 		}
 		writeJSON(w, 200, map[string]any{"ok": true})
