@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -72,7 +73,8 @@ func deleteSkill(name, scope string) error {
 type SkillInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	Scope       string `json:"scope"` // "global" or a project path
+	Scope       string `json:"scope"`    // "global", "plugin:<name>" or a project path
+	ReadOnly    bool   `json:"readonly"` // plugin or synced skills: listed here, managed elsewhere
 }
 
 // listSkills scans the global skills folder plus every known project's
@@ -82,12 +84,72 @@ type SkillInfo struct {
 func listSkills(projects []string) []SkillInfo {
 	out := []SkillInfo{}
 	h, _ := os.UserHomeDir()
-	out = append(out, scanSkillDir(filepath.Join(h, ".claude", "skills"), "global")...)
+	for _, sk := range scanSkillTree(filepath.Join(h, ".claude", "skills"), "global", 3) {
+		// only skills sitting directly in the folder can be deleted from here
+		sk.ReadOnly = !fileExists(filepath.Join(h, ".claude", "skills", sk.Name, "SKILL.md"))
+		out = append(out, sk)
+	}
+	out = append(out, pluginSkills(h)...)
 	for _, p := range projects {
 		if p == "" {
 			continue
 		}
 		out = append(out, scanSkillDir(filepath.Join(p, ".claude", "skills"), p)...)
+	}
+	return out
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// pluginSkills lists skills of installed Claude Code plugins, read from
+// installed_plugins.json so old cached versions aren't listed twice.
+func pluginSkills(home string) []SkillInfo {
+	b, err := os.ReadFile(filepath.Join(home, ".claude", "plugins", "installed_plugins.json"))
+	if err != nil {
+		return nil
+	}
+	var f struct {
+		Plugins map[string][]struct {
+			InstallPath string `json:"installPath"`
+		} `json:"plugins"`
+	}
+	if json.Unmarshal(b, &f) != nil {
+		return nil
+	}
+	var out []SkillInfo
+	for id, installs := range f.Plugins {
+		name, _, _ := strings.Cut(id, "@")
+		for _, in := range installs {
+			for _, sk := range scanSkillDir(filepath.Join(in.InstallPath, "skills"), "plugin:"+name) {
+				sk.ReadOnly = true
+				out = append(out, sk)
+			}
+		}
+	}
+	return out
+}
+
+// scanSkillTree finds SKILL.md files up to depth folders down (synced skills
+// sit one or two folders below ~/.claude/skills).
+func scanSkillTree(dir, scope string, depth int) []SkillInfo {
+	if name, desc, ok := parseSkillFrontmatter(filepath.Join(dir, "SKILL.md")); ok {
+		return []SkillInfo{{Name: name, Description: desc, Scope: scope}}
+	}
+	if depth == 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []SkillInfo
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, scanSkillTree(filepath.Join(dir, e.Name()), scope, depth-1)...)
+		}
 	}
 	return out
 }
