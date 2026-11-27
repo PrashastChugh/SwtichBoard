@@ -80,7 +80,29 @@ func backupSettings() string {
 	return dst
 }
 
+// statusLineNote says what install did about the status line, for the user.
+var statusLineNote string
+
+// isOurStatusLine: ours, or the temporary test command used to look at the
+// message Claude Code sends.
+func isOurStatusLine(v any) bool {
+	b, _ := json.Marshal(v)
+	return isOurs(v) || strings.Contains(string(b), "statusline-sample.json")
+}
+
+func statusLineInstalled() bool {
+	settings, err := loadClaudeSettings()
+	if err != nil {
+		return false
+	}
+	v, ok := settings["statusLine"]
+	return ok && isOurStatusLine(v)
+}
+
 func stripOurs(settings map[string]any) {
+	if v, ok := settings["statusLine"]; ok && isOurStatusLine(v) {
+		delete(settings, "statusLine")
+	}
 	hooks, _ := settings["hooks"].(map[string]any)
 	for event, groupsAny := range hooks {
 		groups, _ := groupsAny.([]any)
@@ -193,6 +215,13 @@ func install(minimal, shellForm bool) (string, error) {
 		hooks[e.name] = append(list, group)
 	}
 	settings["hooks"] = hooks
+	// Claude Code has room for one status line: take it only if it's free.
+	if _, taken := settings["statusLine"]; taken {
+		statusLineNote = "You already have a Claude Code status line, so Switchboard left it alone (context window sizes will be estimated)."
+	} else {
+		settings["statusLine"] = map[string]any{"type": "command", "command": `"` + filepath.ToSlash(bin) + `" statusline`}
+		statusLineNote = "Status line installed: Switchboard now learns each session's real context window size."
+	}
 	_ = os.Remove(filepath.Join(sbHome, "hook.py")) // leftover from the Python version
 	return backup, writeJSONAtomic(claudeSettingsPath(), settings)
 }

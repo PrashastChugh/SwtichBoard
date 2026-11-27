@@ -127,13 +127,14 @@ type Store struct {
 	changed   chan struct{}
 	lastAlert map[string]float64
 	names     map[string]string // session id -> your own name for it
+	windows   map[string]int    // session id -> context window size Claude Code reported
 	ui        UI
 }
 
 func NewStore(cfg *Config) *Store {
 	s := &Store{cfg: cfg, sessions: map[string]*Session{}, meters: map[string]*TranscriptMeter{},
 		Rules: loadRules(), clients: map[chan []byte]bool{}, changed: make(chan struct{}, 1),
-		lastAlert: map[string]float64{}, names: loadNames()}
+		lastAlert: map[string]float64{}, names: loadNames(), windows: map[string]int{}}
 	go s.broadcaster()
 	go s.watchTranscripts()
 	return s
@@ -427,6 +428,7 @@ func (s *Store) RefreshTokens(sid string) {
 		s.mu.Lock()
 		m := s.meters[sid]
 		win := s.cfg.ContextWindow
+		reported := s.windows[sid]
 		s.mu.Unlock()
 		if m == nil {
 			return
@@ -439,7 +441,15 @@ func (s *Store) RefreshTokens(sid string) {
 				win = w
 			}
 		}
+		src := "default"
+		if win != s.cfg.ContextWindow {
+			src = "model"
+		}
+		if reported > 0 {
+			win, src = reported, "statusline"
+		}
 		sum["context_window"] = win
+		sum["window_source"] = src
 
 		s.mu.Lock()
 		x := s.sessions[sid]
@@ -467,6 +477,21 @@ func (s *Store) RefreshTokens(sid string) {
 		}
 		s.Touch()
 	}()
+}
+
+// SetWindow records the context window size Claude Code reported for a
+// session through its status line - the one exact source for it.
+func (s *Store) SetWindow(sid string, size int) {
+	if sid == "" || size <= 0 {
+		return
+	}
+	s.mu.Lock()
+	changed := s.windows[sid] != size
+	s.windows[sid] = size
+	s.mu.Unlock()
+	if changed {
+		s.RefreshTokens(sid)
+	}
 }
 
 // releaseSession frees held requests made obsolete by progress in the terminal.

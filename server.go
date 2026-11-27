@@ -120,6 +120,13 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{})
 	case "/hook/permission":
 		srv.permission(w, r, body)
+	case "/hook/statusline":
+		if cw := obj(body, "context_window"); cw != nil {
+			if size, ok := cw["context_window_size"].(float64); ok {
+				srv.store.SetWindow(str(body, "session_id"), int(size))
+			}
+		}
+		writeJSON(w, 200, map[string]any{})
 	case "/api/decide":
 		ok := srv.store.Decide(str(body, "id"), str(body, "behavior"), strings.TrimSpace(str(body, "message")))
 		writeJSON(w, map[bool]int{true: 200, false: 404}[ok], map[string]any{"ok": ok})

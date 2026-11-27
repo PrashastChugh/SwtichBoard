@@ -42,6 +42,8 @@ func main() {
 	switch cmd {
 	case "hook":
 		os.Exit(runHook())
+	case "statusline":
+		os.Exit(runStatusline())
 	case "start":
 		cmdStart(args)
 	case "install":
@@ -54,6 +56,9 @@ func main() {
 			fail(err)
 		}
 		fmt.Println("Hooks installed in", claudeSettingsPath())
+		if statusLineNote != "" {
+			fmt.Println(statusLineNote)
+		}
 		if backup != "" {
 			fmt.Println("Backup of your previous settings:", backup)
 		}
@@ -76,6 +81,11 @@ func main() {
 			fmt.Println("Hooks: not installed (run: switchboard install)")
 		} else {
 			fmt.Println("Hooks installed for:", strings.Join(ev, ", "))
+		}
+		if statusLineInstalled() {
+			fmt.Println("Status line: installed (reports each session's real context window)")
+		} else {
+			fmt.Println("Status line: not installed (context window is estimated from the model name)")
 		}
 		if isRunning(cfg) {
 			fmt.Println("Running at", fmt.Sprintf("http://127.0.0.1:%d", cfg.Port))

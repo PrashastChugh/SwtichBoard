@@ -82,6 +82,31 @@ func runHook() int {
 	return 0
 }
 
+// runStatusline is Claude Code's status line command. It hands the message
+// Claude Code sends (which includes the real context window size) to the
+// running app, prints nothing, and always exits 0 so the status line never breaks.
+func runStatusline() int {
+	raw, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return 0
+	}
+	cfg, err := readConfig()
+	if err != nil || cfg.Token == "" {
+		return 0
+	}
+	client := &http.Client{Timeout: 1500 * time.Millisecond, Transport: &http.Transport{Proxy: nil}}
+	req, err := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%d/hook/statusline", cfg.Port), bytes.NewReader(raw))
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Switchboard-Token", cfg.Token)
+	if resp, err := client.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	return 0
+}
+
 // parentTTY finds the terminal device of the Claude Code process (our parent),
 // used to find the right Terminal.app tab. Only run on a couple of events.
 func parentTTY() string {
